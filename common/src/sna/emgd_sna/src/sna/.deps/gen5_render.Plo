@@ -1,0 +1,567 @@
+gen5_render.lo: gen5_render.c ../../config.h \
+ /usr/include/xorg/xorg-server.h sna.h \
+ /usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stdint.h \
+ /usr/include/stdint.h /usr/include/features.h /usr/include/stdc-predef.h \
+ /usr/include/sys/cdefs.h /usr/include/bits/wordsize.h \
+ /usr/include/gnu/stubs.h /usr/include/gnu/stubs-64.h \
+ /usr/include/bits/wchar.h compiler.h /usr/include/xorg/xf86Crtc.h \
+ /usr/include/xorg/edid.h /usr/include/X11/Xmd.h \
+ /usr/include/X11/Xfuncproto.h /usr/include/xorg/randrstr.h \
+ /usr/include/X11/X.h /usr/include/X11/Xproto.h \
+ /usr/include/X11/Xprotostr.h /usr/include/xorg/misc.h \
+ /usr/include/X11/Xosdefs.h /usr/include/X11/Xdefs.h \
+ /usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stddef.h \
+ /usr/include/xorg/os.h \
+ /usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stdarg.h \
+ /usr/include/string.h /usr/include/xlocale.h /usr/include/stdio.h \
+ /usr/include/bits/types.h /usr/include/bits/typesizes.h \
+ /usr/include/libio.h /usr/include/_G_config.h /usr/include/wchar.h \
+ /usr/include/bits/stdio_lim.h /usr/include/bits/sys_errlist.h \
+ /usr/include/xorg/Xprintf.h /usr/include/X11/Xfuncs.h \
+ /usr/include/stdlib.h /usr/include/bits/waitflags.h \
+ /usr/include/bits/waitstatus.h /usr/include/endian.h \
+ /usr/include/bits/endian.h /usr/include/bits/byteswap.h \
+ /usr/include/bits/byteswap-16.h /usr/include/sys/types.h \
+ /usr/include/time.h /usr/include/sys/select.h /usr/include/bits/select.h \
+ /usr/include/bits/sigset.h /usr/include/bits/time.h \
+ /usr/include/sys/sysmacros.h /usr/include/bits/pthreadtypes.h \
+ /usr/include/alloca.h \
+ /usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/limits.h \
+ /usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/syslimits.h \
+ /usr/include/limits.h /usr/include/bits/posix1_lim.h \
+ /usr/include/bits/local_lim.h /usr/include/linux/limits.h \
+ /usr/include/bits/posix2_lim.h /usr/include/math.h \
+ /usr/include/bits/huge_val.h /usr/include/bits/huge_valf.h \
+ /usr/include/bits/huge_vall.h /usr/include/bits/inf.h \
+ /usr/include/bits/nan.h /usr/include/bits/mathdef.h \
+ /usr/include/bits/mathcalls.h /usr/include/assert.h /usr/include/ctype.h \
+ /usr/include/xorg/dixstruct.h /usr/include/xorg/client.h \
+ /usr/include/xorg/dix.h /usr/include/xorg/callback.h \
+ /usr/include/xorg/gc.h /usr/include/xorg/screenint.h \
+ /usr/include/xorg/pixmap.h /usr/include/xorg/regionstr.h \
+ /usr/include/xorg/miscstruct.h /usr/include/pixman-1/pixman.h \
+ /usr/include/pixman-1/pixman-version.h /usr/include/xorg/window.h \
+ /usr/include/xorg/region.h /usr/include/xorg/input.h \
+ /usr/include/xorg/xkbrules.h /usr/include/xorg/events.h \
+ /usr/include/xorg/list.h /usr/include/X11/extensions/XI2.h \
+ /usr/include/xorg/cursor.h /usr/include/xorg/privates.h \
+ /usr/include/xorg/resource.h /usr/include/xorg/dixaccess.h \
+ /usr/include/xorg/geext.h /usr/include/X11/extensions/geproto.h \
+ /usr/include/X11/extensions/ge.h /usr/include/X11/extensions/XI.h \
+ /usr/include/xorg/scrnintstr.h /usr/include/xorg/colormap.h \
+ /usr/include/xorg/validate.h /usr/include/xorg/windowstr.h \
+ /usr/include/xorg/pixmapstr.h /usr/include/xorg/damage.h \
+ /usr/include/xorg/property.h /usr/include/xorg/opaque.h \
+ /usr/include/xorg/globals.h /usr/include/signal.h \
+ /usr/include/bits/signum.h /usr/include/bits/siginfo.h \
+ /usr/include/bits/sigaction.h /usr/include/bits/sigcontext.h \
+ /usr/include/bits/sigstack.h /usr/include/sys/ucontext.h \
+ /usr/include/bits/sigthread.h /usr/include/xorg/extinit.h \
+ /usr/include/xorg/extnsionst.h /usr/include/xorg/extension.h \
+ /usr/include/X11/extensions/dpmsconst.h \
+ /usr/include/X11/extensions/panoramiXproto.h \
+ /usr/include/X11/extensions/XResproto.h \
+ /usr/include/X11/extensions/saver.h \
+ /usr/include/X11/extensions/shapeproto.h \
+ /usr/include/X11/extensions/shapeconst.h \
+ /usr/include/X11/extensions/shm.h /usr/include/X11/extensions/shmproto.h \
+ /usr/include/X11/extensions/XKB.h \
+ /usr/include/X11/extensions/xtestconst.h \
+ /usr/include/X11/extensions/xtestproto.h \
+ /usr/include/X11/extensions/Xv.h /usr/include/X11/extensions/XvMC.h \
+ /usr/include/xorg/servermd.h /usr/include/xorg/rrtransform.h \
+ /usr/include/X11/extensions/randr.h /usr/include/xorg/picturestr.h \
+ /usr/include/xorg/glyphstr.h /usr/include/X11/extensions/renderproto.h \
+ /usr/include/X11/extensions/render.h /usr/include/xorg/picture.h \
+ /usr/include/X11/extensions/randrproto.h /usr/include/xorg/xf86Modes.h \
+ /usr/include/xorg/xf86.h /usr/include/xorg/xf86str.h \
+ /usr/include/xorg/colormapst.h /usr/include/xorg/xf86Module.h \
+ /usr/include/xorg/xf86Opt.h /usr/include/xorg/xf86Optionstr.h \
+ /usr/include/inttypes.h /usr/include/xorg/propertyst.h \
+ /usr/include/pciaccess.h /usr/include/xorg/xorgVersion.h \
+ /usr/include/xorg/edid.h /usr/include/xorg/xf86Parser.h \
+ /usr/include/xorg/xf86Optrec.h /usr/include/xorg/xf86Cursor.h \
+ /usr/include/xorg/mipointer.h /usr/include/xorg/xf86i2c.h \
+ /usr/include/xorg/xf86str.h /usr/include/xorg/windowstr.h \
+ /usr/include/xorg/glyphstr.h /usr/include/xorg/picturestr.h \
+ /usr/include/xorg/gcstruct.h /usr/include/xorg/xvdix.h \
+ /usr/include/X11/extensions/Xvproto.h /usr/include/xf86drmMode.h \
+ /usr/include/libdrm/drm.h /usr/include/linux/types.h \
+ /usr/include/asm/types.h /usr/include/asm-generic/types.h \
+ /usr/include/asm-generic/int-ll64.h /usr/include/asm/bitsperlong.h \
+ /usr/include/asm-generic/bitsperlong.h /usr/include/linux/posix_types.h \
+ /usr/include/linux/stddef.h /usr/include/asm/posix_types.h \
+ /usr/include/asm/posix_types_64.h /usr/include/asm-generic/posix_types.h \
+ /usr/include/asm/ioctl.h /usr/include/asm-generic/ioctl.h \
+ /usr/include/libdrm/drm_mode.h ../compat-api.h \
+ /usr/include/xorg/xorgVersion.h /usr/include/libdrm/i915_drm.h \
+ /usr/include/xorg/dri2.h /usr/include/X11/extensions/dri2tokens.h \
+ /usr/include/libudev.h /usr/include/sys/stat.h /usr/include/bits/stat.h \
+ ../../src/intel_driver.h ../../src/intel_list.h \
+ /usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stdbool.h kgem.h \
+ sna_damage.h /usr/include/xorg/regionstr.h sna_render.h \
+ /usr/include/pthread.h /usr/include/sched.h /usr/include/bits/sched.h \
+ /usr/include/bits/setjmp.h atomic.h fb/fb.h /usr/include/xorg/servermd.h \
+ /usr/include/xorg/colormap.h fb/sfb.h fb/../../compat-api.h fb/fbrop.h \
+ sna_reg.h sna_render_inline.h sna_video.h vaxv.h \
+ /usr/include/xorg/xf86_OSproc.h /usr/include/xorg/hotplug.h \
+ /usr/include/xorg/xf86xv.h /usr/include/xorg/xvdix.h \
+ /usr/include/xorg/fourcc.h brw/brw.h brw/brw_eu.h gen5_render.h \
+ gen4_source.h gen4_vertex.h ../../src/render_program/exa_wm_xy.g5b \
+ ../../src/render_program/exa_wm_src_affine.g5b \
+ ../../src/render_program/exa_wm_src_sample_argb.g5b \
+ ../../src/render_program/exa_wm_yuv_rgb.g5b \
+ ../../src/render_program/exa_wm_write.g5b \
+ ../../src/render_program/exa_wm_src_sample_planar.g5b
+
+../../config.h:
+
+/usr/include/xorg/xorg-server.h:
+
+sna.h:
+
+/usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stdint.h:
+
+/usr/include/stdint.h:
+
+/usr/include/features.h:
+
+/usr/include/stdc-predef.h:
+
+/usr/include/sys/cdefs.h:
+
+/usr/include/bits/wordsize.h:
+
+/usr/include/gnu/stubs.h:
+
+/usr/include/gnu/stubs-64.h:
+
+/usr/include/bits/wchar.h:
+
+compiler.h:
+
+/usr/include/xorg/xf86Crtc.h:
+
+/usr/include/xorg/edid.h:
+
+/usr/include/X11/Xmd.h:
+
+/usr/include/X11/Xfuncproto.h:
+
+/usr/include/xorg/randrstr.h:
+
+/usr/include/X11/X.h:
+
+/usr/include/X11/Xproto.h:
+
+/usr/include/X11/Xprotostr.h:
+
+/usr/include/xorg/misc.h:
+
+/usr/include/X11/Xosdefs.h:
+
+/usr/include/X11/Xdefs.h:
+
+/usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stddef.h:
+
+/usr/include/xorg/os.h:
+
+/usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stdarg.h:
+
+/usr/include/string.h:
+
+/usr/include/xlocale.h:
+
+/usr/include/stdio.h:
+
+/usr/include/bits/types.h:
+
+/usr/include/bits/typesizes.h:
+
+/usr/include/libio.h:
+
+/usr/include/_G_config.h:
+
+/usr/include/wchar.h:
+
+/usr/include/bits/stdio_lim.h:
+
+/usr/include/bits/sys_errlist.h:
+
+/usr/include/xorg/Xprintf.h:
+
+/usr/include/X11/Xfuncs.h:
+
+/usr/include/stdlib.h:
+
+/usr/include/bits/waitflags.h:
+
+/usr/include/bits/waitstatus.h:
+
+/usr/include/endian.h:
+
+/usr/include/bits/endian.h:
+
+/usr/include/bits/byteswap.h:
+
+/usr/include/bits/byteswap-16.h:
+
+/usr/include/sys/types.h:
+
+/usr/include/time.h:
+
+/usr/include/sys/select.h:
+
+/usr/include/bits/select.h:
+
+/usr/include/bits/sigset.h:
+
+/usr/include/bits/time.h:
+
+/usr/include/sys/sysmacros.h:
+
+/usr/include/bits/pthreadtypes.h:
+
+/usr/include/alloca.h:
+
+/usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/limits.h:
+
+/usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/syslimits.h:
+
+/usr/include/limits.h:
+
+/usr/include/bits/posix1_lim.h:
+
+/usr/include/bits/local_lim.h:
+
+/usr/include/linux/limits.h:
+
+/usr/include/bits/posix2_lim.h:
+
+/usr/include/math.h:
+
+/usr/include/bits/huge_val.h:
+
+/usr/include/bits/huge_valf.h:
+
+/usr/include/bits/huge_vall.h:
+
+/usr/include/bits/inf.h:
+
+/usr/include/bits/nan.h:
+
+/usr/include/bits/mathdef.h:
+
+/usr/include/bits/mathcalls.h:
+
+/usr/include/assert.h:
+
+/usr/include/ctype.h:
+
+/usr/include/xorg/dixstruct.h:
+
+/usr/include/xorg/client.h:
+
+/usr/include/xorg/dix.h:
+
+/usr/include/xorg/callback.h:
+
+/usr/include/xorg/gc.h:
+
+/usr/include/xorg/screenint.h:
+
+/usr/include/xorg/pixmap.h:
+
+/usr/include/xorg/regionstr.h:
+
+/usr/include/xorg/miscstruct.h:
+
+/usr/include/pixman-1/pixman.h:
+
+/usr/include/pixman-1/pixman-version.h:
+
+/usr/include/xorg/window.h:
+
+/usr/include/xorg/region.h:
+
+/usr/include/xorg/input.h:
+
+/usr/include/xorg/xkbrules.h:
+
+/usr/include/xorg/events.h:
+
+/usr/include/xorg/list.h:
+
+/usr/include/X11/extensions/XI2.h:
+
+/usr/include/xorg/cursor.h:
+
+/usr/include/xorg/privates.h:
+
+/usr/include/xorg/resource.h:
+
+/usr/include/xorg/dixaccess.h:
+
+/usr/include/xorg/geext.h:
+
+/usr/include/X11/extensions/geproto.h:
+
+/usr/include/X11/extensions/ge.h:
+
+/usr/include/X11/extensions/XI.h:
+
+/usr/include/xorg/scrnintstr.h:
+
+/usr/include/xorg/colormap.h:
+
+/usr/include/xorg/validate.h:
+
+/usr/include/xorg/windowstr.h:
+
+/usr/include/xorg/pixmapstr.h:
+
+/usr/include/xorg/damage.h:
+
+/usr/include/xorg/property.h:
+
+/usr/include/xorg/opaque.h:
+
+/usr/include/xorg/globals.h:
+
+/usr/include/signal.h:
+
+/usr/include/bits/signum.h:
+
+/usr/include/bits/siginfo.h:
+
+/usr/include/bits/sigaction.h:
+
+/usr/include/bits/sigcontext.h:
+
+/usr/include/bits/sigstack.h:
+
+/usr/include/sys/ucontext.h:
+
+/usr/include/bits/sigthread.h:
+
+/usr/include/xorg/extinit.h:
+
+/usr/include/xorg/extnsionst.h:
+
+/usr/include/xorg/extension.h:
+
+/usr/include/X11/extensions/dpmsconst.h:
+
+/usr/include/X11/extensions/panoramiXproto.h:
+
+/usr/include/X11/extensions/XResproto.h:
+
+/usr/include/X11/extensions/saver.h:
+
+/usr/include/X11/extensions/shapeproto.h:
+
+/usr/include/X11/extensions/shapeconst.h:
+
+/usr/include/X11/extensions/shm.h:
+
+/usr/include/X11/extensions/shmproto.h:
+
+/usr/include/X11/extensions/XKB.h:
+
+/usr/include/X11/extensions/xtestconst.h:
+
+/usr/include/X11/extensions/xtestproto.h:
+
+/usr/include/X11/extensions/Xv.h:
+
+/usr/include/X11/extensions/XvMC.h:
+
+/usr/include/xorg/servermd.h:
+
+/usr/include/xorg/rrtransform.h:
+
+/usr/include/X11/extensions/randr.h:
+
+/usr/include/xorg/picturestr.h:
+
+/usr/include/xorg/glyphstr.h:
+
+/usr/include/X11/extensions/renderproto.h:
+
+/usr/include/X11/extensions/render.h:
+
+/usr/include/xorg/picture.h:
+
+/usr/include/X11/extensions/randrproto.h:
+
+/usr/include/xorg/xf86Modes.h:
+
+/usr/include/xorg/xf86.h:
+
+/usr/include/xorg/xf86str.h:
+
+/usr/include/xorg/colormapst.h:
+
+/usr/include/xorg/xf86Module.h:
+
+/usr/include/xorg/xf86Opt.h:
+
+/usr/include/xorg/xf86Optionstr.h:
+
+/usr/include/inttypes.h:
+
+/usr/include/xorg/propertyst.h:
+
+/usr/include/pciaccess.h:
+
+/usr/include/xorg/xorgVersion.h:
+
+/usr/include/xorg/edid.h:
+
+/usr/include/xorg/xf86Parser.h:
+
+/usr/include/xorg/xf86Optrec.h:
+
+/usr/include/xorg/xf86Cursor.h:
+
+/usr/include/xorg/mipointer.h:
+
+/usr/include/xorg/xf86i2c.h:
+
+/usr/include/xorg/xf86str.h:
+
+/usr/include/xorg/windowstr.h:
+
+/usr/include/xorg/glyphstr.h:
+
+/usr/include/xorg/picturestr.h:
+
+/usr/include/xorg/gcstruct.h:
+
+/usr/include/xorg/xvdix.h:
+
+/usr/include/X11/extensions/Xvproto.h:
+
+/usr/include/xf86drmMode.h:
+
+/usr/include/libdrm/drm.h:
+
+/usr/include/linux/types.h:
+
+/usr/include/asm/types.h:
+
+/usr/include/asm-generic/types.h:
+
+/usr/include/asm-generic/int-ll64.h:
+
+/usr/include/asm/bitsperlong.h:
+
+/usr/include/asm-generic/bitsperlong.h:
+
+/usr/include/linux/posix_types.h:
+
+/usr/include/linux/stddef.h:
+
+/usr/include/asm/posix_types.h:
+
+/usr/include/asm/posix_types_64.h:
+
+/usr/include/asm-generic/posix_types.h:
+
+/usr/include/asm/ioctl.h:
+
+/usr/include/asm-generic/ioctl.h:
+
+/usr/include/libdrm/drm_mode.h:
+
+../compat-api.h:
+
+/usr/include/xorg/xorgVersion.h:
+
+/usr/include/libdrm/i915_drm.h:
+
+/usr/include/xorg/dri2.h:
+
+/usr/include/X11/extensions/dri2tokens.h:
+
+/usr/include/libudev.h:
+
+/usr/include/sys/stat.h:
+
+/usr/include/bits/stat.h:
+
+../../src/intel_driver.h:
+
+../../src/intel_list.h:
+
+/usr/lib/gcc/x86_64-redhat-linux/4.7.2/include/stdbool.h:
+
+kgem.h:
+
+sna_damage.h:
+
+/usr/include/xorg/regionstr.h:
+
+sna_render.h:
+
+/usr/include/pthread.h:
+
+/usr/include/sched.h:
+
+/usr/include/bits/sched.h:
+
+/usr/include/bits/setjmp.h:
+
+atomic.h:
+
+fb/fb.h:
+
+/usr/include/xorg/servermd.h:
+
+/usr/include/xorg/colormap.h:
+
+fb/sfb.h:
+
+fb/../../compat-api.h:
+
+fb/fbrop.h:
+
+sna_reg.h:
+
+sna_render_inline.h:
+
+sna_video.h:
+
+vaxv.h:
+
+/usr/include/xorg/xf86_OSproc.h:
+
+/usr/include/xorg/hotplug.h:
+
+/usr/include/xorg/xf86xv.h:
+
+/usr/include/xorg/xvdix.h:
+
+/usr/include/xorg/fourcc.h:
+
+brw/brw.h:
+
+brw/brw_eu.h:
+
+gen5_render.h:
+
+gen4_source.h:
+
+gen4_vertex.h:
+
+../../src/render_program/exa_wm_xy.g5b:
+
+../../src/render_program/exa_wm_src_affine.g5b:
+
+../../src/render_program/exa_wm_src_sample_argb.g5b:
+
+../../src/render_program/exa_wm_yuv_rgb.g5b:
+
+../../src/render_program/exa_wm_write.g5b:
+
+../../src/render_program/exa_wm_src_sample_planar.g5b:

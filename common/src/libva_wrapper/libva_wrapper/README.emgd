@@ -1,0 +1,2 @@
+To use this driver remember to:
+export LIBVA_DRIVER_NAME=wrapper

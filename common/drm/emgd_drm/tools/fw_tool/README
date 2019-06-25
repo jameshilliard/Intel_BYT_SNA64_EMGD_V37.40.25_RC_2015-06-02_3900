@@ -1,0 +1,162 @@
+Usage: fw_tool
+This tool converts a user_config.c and image_data.h into an emgd.bin
+firmware binary blob to be used to configure the EMGD Linux driver.
+user_config.c and image_data.h should be placed in the fw_tool
+directory and then compiled by running 'make' or 'make fw_tool'.
+Once its compiled into the fw_tool executable it can be run to do
+the conversion.
+
+   fw_tool
+      compiled(user_config.c + image_data.h) ---> emgd.bin
+
+
+Usage: rev_fw_tool
+This will take an emgd.bin in the same directory and create
+new_user_config.c and new_image_data.h, representing the data
+contained in the emgd.bin file. You can build this tool
+individually by running 'make rev_fw_tool' or it will get created
+if you run 'make'.  If you run 'make' you will also need to include
+a user_config.c and image_data.h because fw_tool will also be build.
+
+   rev_fw_tool
+      emgd.bin ---> new_user_config.c + new_image_data.h
+
+
+Usage: old_config_convert
+This tool takes an older user_config.c file and converts it into an
+emgd.bin firmware binary blob to be used to configure the EMGD Linux
+driver.  User_config.c and image_data.h should be placed in the
+fw_tool directory and then compiled by running 'make old_config_convert'.
+Once its compiled into the old_config_convert tool, it can be run to
+do the conversion.  To run the tool simply execute './old_config_convert'
+There are no options to convert from a binary blob back to the previous
+user_config.c files.  If you want to convert back to text files you will
+have to use the fw_tool.  This tool is just here to help people convert
+their old user_config.c files into current binary blobs.
+
+Using the binary blob:
+The firmware binary blob can be used to configure the EMGD driver.  There are a
+couple different ways to actually use this firmware.  One way is to copy the
+file (let's call it emgd.bin) into /lib/firmware.  Once that's copied, when you
+start the driver using modprobe or insmod, you pass in a module parameter
+"firmware" which specifies which firmware blob to load.  This name as passed in
+by the parameter is used in the call to request_firmware, which will look for
+this file in the built-in kernel firmware files, and in /lib/firmware.  As this
+implies, you can also build this firmware into the kernel.  In order to do this
+make sure CONFIG_FIRMWARE_IN_KERNEL, CONFIG_EXTRA_FIRMWARE_DIR and
+CONFIG_EXTRA_FIRMWARE are set accordingly.  Here is an example:
+	CONFIG_FIRMWARE_IN_KERNEL=y
+	CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"
+	CONFIG_EXTRA_FIRMWARE="emgd.bin"
+If you choose to build the EMGD driver into the kernel, and you want to specify
+the firmware to be used with a module parameter, you should add
+emgd.firmware="emgd.bin" to your kernel boot parameters.
+Please take caution on licensing issue where non-GPL content should not be bundled 
+into the kernel. As an example, a trademark or company logo is usually a non-GPL 
+content and shall not be in any part of the kernel.
+For splash screen feature, there is a method where we can use a non-GPL content. 
+The method will utilise a temporary file system which is called 'initial ram 
+filesystem' or in short 'initramfs'. This file system will be loaded during the 
+boot process of the kernel. Instruction for this method is described below:
+
+You can also build multiple firmware blobs in your kernel, and then choose which
+one you want to use via the kernel or modprobe command line.  For instance you
+can have different binary blobs like: single_10x7.bin, dual_12x10_6x4.bin and
+then specify which of those you want to use in the command line.  You would
+specify multiple firmare blobs to include as follows:
+	CONFIG_EXTRA_FIRMWARE="single_10x7.bin dual_12x10_6x4.bin"
+
+---------------------------------------------------------------------------------------
+Instruction to load binary blob from initramfs:
+
+******************************************************
+STEP 1 --> COMPILE EMGD AS A KERNEL BUILT-IN DRIVER
+******************************************************
+1.1	Make emgd as built-in driver in kernel source compilation:
+		cd <path_to_the_kernel_src> 	
+		make menuconfig
+
+ 	In device drivers->graphics support, put a <*> instead of <M> for 
+	DRM and EMGD.
+	
+	Save & Exit.
+
+1.2	Make sure there is no binary blob configured as a built-in in the kernel 
+	configuration:
+		#CONFIG_FIRMWARE_IN_KERNEL is not set
+		CONFIG_EXTRA_FIRMWARE=""    (leave CONFIG_EXTRA_FIRMWARE to be blanked)
+
+1.3 	Compile kernel source code:
+		make    		
+
+1.4	After the compilation is completed, copy bzImage(kernel image) to /boot:
+		cp <kernel_src>/arch/x86/boot/bzImage /boot/vmlinuz-version-emgd-built-in
+
+************************************************************
+STEP 2 --> CREATE AN INITRAMFS WITH THE BINARY BLOB INSIDE
+************************************************************
+
+2.1	You can either build a new initramfs or modifying the existing one.
+
+2.2	To create a new initramfs, you need a tools named dracut. You can install the 
+	package through yum:
+		yum install dracut
+
+2.3 	Create a new initramfs by doing:
+	FEDORA - Using dracut to create initramfs
+
+		dracut initramfs-XXX.img kernel_name	(kernel_name=uname -r) 
+
+	TIZEN - Using make initramfs script to create initramfs(if dracut is not available)
+		Go to link -> http://www.linuxfromscratch.org/blfs/view/svn/postlfs/initramfs.html
+		Follow the steps in the link to install mkinitramfs.
+
+		mkinitramfs kernel_name 	(kernel_name=uname -r)	
+
+2.4 	Create a folder to store the extracted contents of initramfs:
+		mkdir /root/initramfs
+		cd /root/initramfs
+
+2.5	Extract the contents of initramfs into initramfs folder(might take some time). 
+	You can either pick a new created initramfs or modify the existing initrmafs which 
+	is usually put under /boot/ (Eg. initramfs-3.8.0-FC18-64-WW29.img)
+		gunzip < boot/initramfs-XXX.img | cpio -i     (new) 			
+		OR
+		gunzip < boot/initramfs-3.8.0-FC18-64-WW29.img | cpio -i     (existing)
+
+2.6	You will have the initramfs in the initramfs folder now. The next step is to put the 
+	binary blob, emgd.bin into the initramfs.
+		cd /root/initramfs/lib
+		mkdir firmware
+		cd firmware
+		cp <path_to_local_binary_blob>/emgd.bin .
+		cd ../../../
+
+2.7	Pack all the contents in the initramfs folder back to an img file(might take some time).
+		find | cpio -H newc -o | gzip -9 > /boot/initramfs-XXX-with-binaryblob.img
+
+2.8	Note that now there is a new initramfs with emgd.bin inside in the 
+	/boot/initramfs-XXX-with-binaryblob.img
+
+************************************
+STEP 3 --> CONFIGURE THE BOOT MENU
+************************************
+3.1	Edit the boot menu so it loads the requested kernel and initramfs. Make sure 
+	
+	1.	Kernel load the emgd built-in image:
+			linux /boot/vmlinuz-version-emgd-built-in
+ 
+	2.	emgd.firmware as a linux/ parameter points to the correct name of the binary blob 
+			emgd.firmware="emgd.bin"
+
+	3.	initrd points to the correct initramfs. 
+			initrd /boot/initramfs-XXX-with-binaryblob.img
+
+
+NOTE:
+You can remove all the binary blob in your local filesystem in /lib/firmware to make sure 
+when the kernel built-in EMGD is installed, it will take the firmware from the initramfs not 
+from the real file system. Reboot your system and you will get the splash screen from 
+the initramfs.
+-------------------------------------------------------------------------------------------------------
+

@@ -1,0 +1,37 @@
+To compile this driver with EMGD's normal build environment under Linux (Fedora 18 used), please do the following:
+
+1. libdrm for ipvr requirement
+============================================
+a. git clone git://anongit.freedesktop.org/mesa/drm
+   cd drm
+   git checkout libdrm-2.4.52
+b. patch the two patches under lin-emgd_vlv/patches/common/VA_Driver_i965/VP8
+   patch -p1 < 0001-IPVR-Libdrm-2.4.52-Suppport-IPVR-drm-driver-for-vp8-.patch
+   patch -p1 < 0002-IPVR-Libdrm-2.4.52-Suppport-IPVR-drm-driver-for-vp8-.patch
+c. /autogen.sh --prefix=/usr
+   make
+   make install
+
+2. Libva 1.5.0 requirement
+============================================================
+a. git clone http://anongit.freedesktop.org/git/libva.git
+   cd libva
+   git checkout libva-1.5.0
+b. ./autogen.sh --prefix=/usr
+   make
+   make install
+
+3. Psb video driver compilation
+===============================
+a. Do a "yum install libXrandr-devel.i686", you need some library header file for you to compile it.
+b. ./autogen.sh --prefix=/usr
+   make
+   make install
+c. cp fw/msvdx/msvdx_fw_mfld_DE2.0.bin to /lib/firmware/
+
+3. Others
+===============================
+a. The generated psb_drv_vide.so will be installed in the /usr/lib/dri/.
+b. Default enable baytrail:
+   --enable-baytrail build with baytrail platform support only
+   [default=yes]

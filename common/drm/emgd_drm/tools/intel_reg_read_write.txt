@@ -1,0 +1,65 @@
+How to Use intel_gpu_tools.
+===========================
+
+Intel-gpu-tools – freedesktop (http://cgit.freedesktop.org/xorg/app/intel-gpu-tools/ )
+
+A) Steps to get started :
+	1.   Git clone http://anongit.freedesktop.org/git/xorg/app/intel-gpu-tools.git
+	2.   Yum install python3*                 
+			##(Remark: for FC18 the installed python version will 
+				be 3.3.x meanwhile 3.2.x for FC16)
+	3.	alias python='python3' (type “python” command on the console to ensure 
+		that we are using 3.X interpreter instead of 2.7.3 ) –
+	4.  echo "alias python='python3'" -> it is always best to place this in the .bashrc 
+		so that we do need to set this always
+	5.  install libdrm-2.3.39
+	6.  install xorg-macro >=1.17
+	7.  Get into intel-gpu-tools then :
+		$  ./autogen.sh PYTHON_LDFLAGS="-lpython3.3m" 
+				( use lpython3.2mu for FC16 | use “lpython3.3m” for FC18 )
+			   ## Remark: the installed python libraries are located in /usr/bin
+		$  Make
+
+
+B) Read and write VLV MMIO registers
+-   Go to tools then execute intel_reg_read or intel_reg_write .
+
+	Example: ./intel_reg_read 0x001e000c (added: 1800000 offset in accordance to b-spec)
+		$./intel_reg_red 0x001e000c
+		0x1E000C: 0x42903FF
+     
+-   Alternatively:
+	Get into quickdump: use reg_access
+
+    Example: python reg_access.py 0x001e000c (added: 1800000 offset in accordance to b-spec)
+		$ python reg_access.py 0x001e000c
+		$ 0x42903ff
+      
+
+ 
+
+C) 	Quickdump: Intel-reg-dumper is going to be replaced by quick_dump tool  near future 
+	(for future platform). However, intel-reg-dumper is still going to be kept over 
+	there just handle all the legacy stuffs (SNB platform…) At it’s heart, quick dump 
+	is simply a basic text parsing thingy which plugs into into intel-gpu-tools to do 
+	something similar to inte-reg-dumper. The format of the register definition files is very open.  
+-	Getting stated with quick dump:
+	1.  Type python
+	2.  Type: python <PATH>quick_dump.py –a –b (to get all the VLV specific registers)
+	3.  Type: python <PATH>quick_dump.py –a       (VLV specific registers + all other base registers)
+	4.  Type: python <PATH>quick_dump.py –-help ( for help menu)
+ 
+ 
+-	Alternatively:
+	1.	Get into quickdump
+	2.  Masked out #os.chdir(os.path.dirname(sys.argv[0])) – as shown as below
+ 
+	FILE:< quick_dump.py >
+ 
+	3.  Type: python quick_dump.py –a –b (to get all the VLV specific registers)
+	4.  Type: python quick_dump.py –a       (VLV specific registers + all other base registers)
+	5.  Type: python quick_dump.py –-help ( for help menu)
+ 
+                                   
+ 
+D)   Note: Other functionality files within similar tools folder may or may not be working properly on VLV specific platform in tools folder.

@@ -1,0 +1,455 @@
+<!--******************************************************************************
+ *  Copyright (c) 2002-2014, Intel Corporation.
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the 'Software'), to deal
+ *  in the Software without restriction, including without limitation the rights
+ *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *  copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ *  THE SOFTWARE.
+ *
+ ********************************************************************************-->
+<HTML>
+<head><title>EMGDGUI</title>
+	<link type='text/css' href='browser_inc/jquery-ui-1.8.12.custom.css' rel='stylesheet' />
+	<style type='text/css'>
+	body { margin:0;padding:0 }
+	.red_slider, .green_slider, .blue_slider, .brightness_slider, .color_brightness_slider, 
+	.contrast_slider, .color_contrast_slider, .saturation_slider, .hue_slider {
+		float: left;
+		clear: left;
+		width: 200px;
+		margin: 15px;
+	}
+	.red_slider .ui-slider-range { background: #ef2929; }
+	.green_slider .ui-slider-range { background: #8ae234; }
+	.blue_slider .ui-slider-range { background: #729fcf; }
+	.color_brightness_slider .ui-slider-range { background: #f6931f; }
+	.brightness_slider .ui-slider-range { background: #f6931f; }
+	.color_contrast_slider .ui-slider-range { background: #f6931f; }
+	.contrast_slider .ui-slider-range { background: #f6931f; }
+	.saturation_slider .ui-slider-range { background: #f6931f; }
+	.hue_slider .ui-slider-range { background: #f6931f; }
+	.mode_draggable { width: 160px; height: 80px; padding: 5px; }
+	.mode_sortable { width: 340px; height: 95px; padding: 5px;}
+	.primarySortable { background-color:#606060; }
+	.mode_sortable>div { float: left; }
+	.plane_draggable { width: 100px; height: 40px; padding: 0.5em; }
+	.plane_sortable { width:720px; height: 60px; padding: 0.5em; background-color:#606060;}
+	.plane_sortable>div { float: left; }
+	.pipesortable { width:120px; padding: 0.5em; background-color:#606060; list-style-type: none;}
+	.pipesortable>li { padding: 0.5em; width: 100px; height: 40px; text-align: center; }
+	.monitorTitle { display: block; width: 100%; text-align: center; font-weight: bold; color: #0860ab; }
+	.monitorImage { background-image:url('browser_inc/images/monitor1.jpg'); background-repeat:no-repeat; }
+	</style>
+	<script type='text/javascript' src='browser_inc/jquery.js'></script>
+	<script type='text/javascript' src='browser_inc/jquery-ui-1.8.11.min.js'></script>
+	<script type='text/javascript' src='browser_inc/indexfuncs.js'></script>
+	<META HTTP-EQUIV='Content-Type' CONTENT='text/html; charset=ISO-8859-1'>
+	<script>		                
+
+	$(function() {
+		$( '.leftbutton' ).button({
+			icons: {
+				primary: 'ui-icon-circle-triangle-w'
+			},
+			text: false,
+		});
+	});
+
+	$(function() {
+		$( '.rightbutton' ).button({
+			icons: {
+				primary: 'ui-icon-circle-triangle-e'
+			},
+		text: false
+		});
+	});
+
+	$(function() {
+		$( '.radio_display_div' ).buttonset();
+	});
+
+	$(function() {
+		$( '.mode_sortable' ).sortable({
+			revert: true,
+			connectWith: '.mode_sortable'
+		});
+		$( '.mode_sortable' ).disableSelection();
+
+	});
+
+	</script>
+	<script type='text/javascript'>
+	
+		var colorArray = new Object();
+		/* colorArray['VGA-1'] = new Object();
+		colorArray['VGA-1']['sliderGammaR'] = 5;
+		colorArray['VGA-1']['sliderGammaG'] = 6;
+		colorArray['VGA-1']['sliderGammaB'] = 7; */
+		// The next line will be replaced by current colors from the driver. Do not change.
+		// %s 
+
+		var portArray=[
+			//'VGA','HDMI-1','HDMI-2','DP-1','DP-2','(disabled)'
+			//  %s
+		]; /* (disabled) must be last element */
+		var displayIndex=[0, 1];
+	
+		var planeArray = new Array();
+		/*
+		planeArray[0] = new Object();
+		planeArray[0]['global_sliderValueOverlayGammaR'] = 100;
+		planeArray[0]['global_sliderValueOverlayGammaG'] = 100;
+		planeArray[0]['global_sliderValueOverlayGammaB'] = 150; */
+		// The next line will be replaced by current plane settings from the driver. Do not change.
+		// %s
+	
+		function setDefaultPlane() {			
+			$('.gamma').each(function()	{
+				document.getElementById($(this).attr('id')).value = 1.0;
+			});
+			$('.brightness').each(function() {
+				document.getElementById($(this).attr('id')).value = -5;
+			});
+			$('.contrast').each(function() {
+				document.getElementById($(this).attr('id')).value = 67;
+			});
+			$('.saturation').each(function() {
+				document.getElementById($(this).attr('id')).value = 145;
+			});
+			$('.hue').each(function() {
+				document.getElementById($(this).attr('id')).value = 0;
+			});
+			setPlanesCorrectionSlider();
+		}
+
+		function setDefaultColors() {			
+			$('.color_gamma_slider').each(function()	{
+				document.getElementById(($(this).attr('id')+'').substring(0, ($(this).attr('id')+'').lastIndexOf('_'))).value = 1.0;
+			});
+			$('.color_brightness_slider').each(function() {
+				document.getElementById(($(this).attr('id')+'').substring(0, ($(this).attr('id')+'').lastIndexOf('_'))).value = 128;
+			});
+			$('.color_contrast_slider').each(function() {
+				document.getElementById(($(this).attr('id')+'').substring(0, ($(this).attr('id')+'').lastIndexOf('_'))).value = 128;
+			});
+			setColorCorrectionSlider();
+		}
+		
+		function setColors() {
+			if (document.form_color_correction.radio_display == null) {				
+				return;
+			}
+			len = document.form_color_correction.radio_display.length
+			if (typeof len == 'undefined') {
+				var d = document.form_color_correction.radio_display.value;
+				for (var id in colorArray[d]) {
+					document.getElementById(id).value = colorArray[d][id];            
+				} 
+			} else {
+				for (i = 0; i <len; i++) {
+					if (document.form_color_correction.radio_display[i].checked) {
+						var d = document.form_color_correction.radio_display[i].value;
+						for (var id in colorArray[d]) {
+							document.getElementById(id).value = colorArray[d][id]; 						
+						}					
+						break;	
+					}
+				}
+			}
+			setColorCorrectionSlider();
+			setPlanesCorrectionSlider();
+		}
+
+		function getURLParmByName(name) {
+			var reg = name + '=' + '(.+?)(&|$)';
+			var r1 = (RegExp(reg).exec(location.search)||[,null])[1];
+			if (r1 == null)
+				return 'null';
+			var r2 = r1.replace(/[+]/g,' ');
+			return unescape(r2);
+		}
+
+		function submitDisplayPosition() {
+			var idsInOrder = $('#displaySortable').sortable('toArray');
+			var f = document.forms['form_display'];			
+			if (idsInOrder[0] == 'display0') {
+				/* original order */
+				f.displayName1.value = portArray[displayIndex[0]];
+				f.displayName2.value = portArray[displayIndex[1]];
+			} else {
+				f.displayName1.value = portArray[displayIndex[1]];
+				f.displayName2.value = portArray[displayIndex[0]];
+			}
+			f.submit();
+		}
+
+		/* direction is either +1 or -1 integer */
+		function cycleDisplay(direction, index) {
+			var id = 'dragLabel' + index;
+			displayIndex[index] = (displayIndex[index] + direction + portArray.length) % (portArray.length);
+			if (displayIndex[0] == displayIndex[1]) {
+				/* increment again */
+				displayIndex[index] = (displayIndex[index] + direction + portArray.length) % (portArray.length);
+			}
+			document.getElementById(id).innerHTML=portArray[displayIndex[index]];
+		}
+
+		function buildPlaneGetString(name, configNumber) {
+			var result='';
+			name += '_';
+			//TODO use names from backend instead of specifiying 'gamma_red' or 'global_slider...'
+			result += name+'gamma_red='+document.getElementById('global_sliderValueOverlayGammaR'+configNumber).value + '&';
+			result += name+'gamma_green='+document.getElementById('global_sliderValueOverlayGammaG'+configNumber).value + '&';
+			result += name+'gamma_blue='+document.getElementById('global_sliderValueOverlayGammaB'+configNumber).value + '&';
+			result += name+'brightness='+document.getElementById('global_sliderValueOverlay2'+configNumber).value + '&';
+			result += name+'contrast='+document.getElementById('global_sliderValueOverlay3'+configNumber).value + '&';
+			result += name+'saturation='+document.getElementById('global_sliderValueOverlay4'+configNumber).value + '&';
+			result += name+'hue='+document.getElementById('global_sliderValueOverlay5'+configNumber).value + '&';
+			return result;
+		}
+
+		function applyPlanes() {
+			var order;
+			var i
+			var configNumber;
+			var getStr = '?';
+			var keyValue = encodeURIComponent(getURLParmByName('key'));
+			if (keyValue != 'null') {
+				getStr += 'key=' + keyValue + '&';
+			}
+
+			for (configNumber=1; configNumber<=NUMBER_OF_SPRITE_PLANES;configNumber++) {
+				order = $(document.getElementById('planeSortable'+configNumber)).sortable('toArray');
+				for (i=0; i<order.length; i++) {
+					getStr += buildPlaneGetString(order[i], configNumber);
+				}
+			}
+
+			var f = document.forms['form_plane'];
+			f.method = 'POST'; 
+			/* We still want GET, but HTML only passes GET parameters in the action string if it is POST */
+			f.action = f.action + getStr;
+			f.submit();	
+		}
+
+		function onLoad() {
+			createPlaneConfigs();
+			setPlaneText();
+			setColors();
+
+			createPipeConfigs();
+
+			if (document.getElementById('cbo_pmode2').length == 0) {
+				/* Empty combo box of display 2 resolutions */
+				displayIndex[1] = portArray.length - 1; //Set to disabled 
+				$('#fieldset_pmode2').hide();
+			}
+			/* Unless something is wrong, portArray should always have at least 1 display and a (disabled) item */
+			if (portArray.length <= 1) {
+				document.getElementById('xrandrWarningLabel').innerHTML = 'xrandr not found on the system. Disabling modeset.';
+				document.getElementById('modesetApply').disabled = true;
+				$('#fieldset_pmode1').hide();
+			} 
+		
+			if (portArray.length <= 2) {
+				$('.displayButton').each(function() {
+					$(this).hide();
+				});
+			}
+
+			/* Initialize port name in various places */
+			for (var i=0; i<2; i++) {
+				var d = portArray[displayIndex[i]];
+				document.getElementById('pmode' + (i+1) + 'Name').value = d;
+				document.getElementById('dragLabel'+i).innerHTML=d;
+				document.getElementById('resLabel'+i).innerHTML=d;
+			}
+
+			/* Prepare the key the user entered for sending to a new page */
+			var keyValue = getURLParmByName('key');
+			if (keyValue != 'null') {
+				$('.hidden_key').each(function()      {
+					$(this).attr('value', keyValue);
+				});
+			}
+		}
+		window.onload = onLoad; 
+	</script>
+
+</head><body>
+<table width='100%'><tr><td></td><td width='795px'>
+	<table width='100%' bgcolor='#005AA1' class='ui-corner-all'><tr><td><img src='browser_inc/images/logo3.jpg'></td><td> 
+	</td></tr>
+	</table>
+	<table width='795px' border='0' > <tr> <td valign='top'>		  
+	<div id='general_tabs' class='ui-tabs ui-widget ui-widget-content ui-corner-all settingstabs'>
+		<ul class='ui-tabs-nav ui-helper-reset ui-helper-clearfix ui-widget-header ui-corner-all'>
+			<li class='ui-state-default ui-corner-top ui-tabs-selected ui-state-active'><a href='#general_driver_info'>Driver Info</a></li>
+			<li class='ui-state-default ui-corner-top'><a href='#general_crtcs'>CRTCs/Pipes</a></li>
+			<li class='ui-state-default ui-corner-top'><a href='#general_planes'>Planes</a></li>
+			<li class='ui-state-default ui-corner-top'><a href='#general_mode'>Modeset</a></li>
+			<li class='ui-state-default ui-corner-top'><a href='#color_correction'>Color Correction</a></li>
+		</ul>
+		<div id='general_driver_info' class='ui-tabs-panel ui-widget-content ui-corner-bottom'>
+	 	<table width='750' class='ui-widget ui-widget-content ui-corner-all'>
+		 <tr><td width='200'><p>Product Name</td><td>%s</td>
+		 <tr><td>EMGD Version</td><td>%s</td>
+		 <tr><td>EMGDGUI Version</td><td>%d.%d.%d</td>
+		 <tr><td>Build Date</td><td>%s</td>
+		 <tr><td>Chipset</td><td>%s</td>
+		</table>		
+		<p>
+		%s
+		</p><br><p>
+		Intel (R) Embedded Media and Graphics Driver (EMGD) Copyright (c) 2003-2014, Intel Corporation
+		</p>       
+		</div>
+		<div id='general_crtcs' class='ui-tabs-panel ui-widget-content ui-corner-bottom ui-tabs-hide'>
+			%s
+		</div>
+		<div id='general_planes' class='ui-tabs-panel ui-widget-content ui-corner-bottom ui-tabs-hide'>
+			<p><input id='general_planes_apply_plane_configuration' type='button' value='Apply plane configurations' onClick='applyPlanes()'/>
+				<input id='general_planes_defaults' type='button' value='Defaults' onclick='setDefaultPlane();'/></p>
+			<form name='form_plane' id='form_plane' action='plane'></form>
+			<div id='sprite_plane_settings'>
+ 			</div>
+		</div>
+		<div id='general_mode' class='ui-tabs-panel ui-widget-content ui-corner-bottom ui-tabs-hide'>
+			<label id='xrandrWarningLabel'></label>
+			<p>
+			<div id='displaySortable' class='mode_sortable primarySortable'>
+				<div id='display0' class='mode_draggable monitorImage'>
+					<label class='monitorTitle' id='dragLabel0' >Port 1</label><p>
+					<table width='100%'>
+						<tr><td><button class='ui-button displayButton leftbutton' onClick='cycleDisplay(-1, 0);'></button></td>
+						<td align='right'><button class='displayButton rightbutton' onClick='cycleDisplay(1, 0);'></button></td>
+					</table>
+				</div>
+				<div id='display1' class='mode_draggable monitorImage'>
+					<label class='monitorTitle' id='dragLabel1' >Port 2</label><p>
+					<table width='100%'>
+						<tr><td><button class='ui-button displayButton leftbutton' onClick='cycleDisplay(-1, 1);'></button></td>
+						<td align='right'><button class='displayButton rightbutton' onClick='cycleDisplay(1, 1);'></button></td>
+					</table>
+				</div>
+			</div>
+			<form name='form_display' id='form_display' method='GET' action='xr'>
+			display 1
+			<select name='cbo_xrandr_position' id='cbo_xrandr_position'>
+				<option value='--same-as'%s>same as</option>
+				<option value='--below'%s>below</option>
+				<option value='--right-of'%s>right of</option>
+				<option value='--above'%s>above</option>
+				<option value='--left-of'%s>left of</option>
+			</select>
+			display 2<br>
+			<div class='radio_display_div'>
+			Primary display: <input type='radio' checked id='radio_primary1' value='1' name='radio_primary'><label for='radio_primary1'>Display 1</label><input type='radio' id='radio_primary2' value='2' name='radio_primary'><label for='radio_primary2'>Display 2</label>
+		</div>
+			<p>
+			<input type='hidden' name='key' class='hidden_key' id='key1' value='' />
+			<input type='hidden' name='displayName1' id='displayName1' value='' />
+			<input type='hidden' name='displayName2' id='displayName2' value='' />
+			<input type='hidden' name='pmode1Name' id='pmode1Name' value='' />
+			<input type='hidden' name='pmode2Name' id='pmode2Name' value='' />
+			<fieldset id='fieldset_pmode1'>
+				<legend id='resLabel0'>Port 1</legend>
+					Resolution					
+					<select name='pmode1' id='cbo_pmode1'>%s</select>
+			</fieldset>
+			<fieldset id='fieldset_pmode2'>
+				<legend id='resLabel1'>Port 2</legend>
+					Resolution
+					<select name='pmode2' id='cbo_pmode2'>%s</select>
+						<option></option>
+					</select>
+			</fieldset>
+			<p>
+			<input type='button' id='modesetApply' value='Apply' onClick='submitDisplayPosition()'/>
+			</form>
+		</div>	
+		<div id='color_correction' class='ui-tabs-panel ui-widget-content ui-corner-bottom ui-tabs-hide'>
+ <form name='form_color_correction' id='form_color_correction' method='GET' action='color'>
+
+			<table border=0 align='center'>
+				<tr><td>
+				<div class='radio_display_div'>
+				%s
+				<!--<br><input type='radio' name='radio_display' value='VGA-1' onClick='setColors()'>VGA-1-test<br>
+				<input type='radio' name='radio_display' value='VGA-2' onClick='setColors()'>VGA-2-test<br> -->
+				&nbsp;&nbsp;Select the display, set a color and apply
+				</div>
+				</td></tr>
+				<tr><td>
+				<fieldset>
+					<legend>Gamma Correction</legend>
+					<table border=0 align='center' width='600px'>
+						<tr><td>
+							<input size='5' type='text' type='text' name='sliderGammaR' id='sliderGammaR' readOnly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;' />
+							<div id='sliderGammaR_slider' class='color_gamma_slider red_slider'></div>
+						</td><td>
+							<input size='5' type='text' name='sliderGammaG' readOnly='true' id='sliderGammaG' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							  <div id='sliderGammaG_slider' class='color_gamma_slider green_slider'></div>
+						</td><td>
+							<input size='5' type='text' name='sliderGammaB' id='sliderGammaB' readOnly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderGammaB_slider' class='color_gamma_slider blue_slider'></div>
+						</td></tr>
+					</table>
+				</fieldset>
+				<br>
+
+				<fieldset>
+					<legend>Brightness Correction</legend>
+					<table border=0 align='center' width='600px'>
+						<tr><td>
+							<input size='5' type='text' name='sliderBrightR'  id='sliderBrightR' readonly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderBrightR_slider' class='color_brightness_slider red_slider'></div>
+						</td><td>
+							<input size='5' type='text' name='sliderBrightG' id='sliderBrightG' readonly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderBrightG_slider' class='color_brightness_slider green_slider'></div>
+						</td><td>
+							<input size='5' type='text' name='sliderBrightB' id='sliderBrightB' readonly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderBrightB_slider' class='color_brightness_slider blue_slider'></div>
+						</td></tr>
+					</table>
+				</fieldset>
+				<br>
+				<fieldset>
+					<legend>Contrast Correction</legend>
+					<table border=0 align='center' width='600px'>
+						<tr><td>
+							<input size='5' type='text' name='sliderContrastR' id='sliderContrastR' readonly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderContrastR_slider' class='color_contrast_slider red_slider'></div>
+						</td><td>
+							<input size='5' type='text' name='sliderContrastG' id='sliderContrastG' readonly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderContrastG_slider' class='color_contrast_slider green_slider'></div>
+						</td><td>
+							<input size='5' type='text' name='sliderContrastB' id='sliderContrastB' readonly='true' style='border:0; color:#f6931f; font-weight:bold; margin-left: 15px;'/>
+							<div id='sliderContrastB_slider' class='color_contrast_slider blue_slider'></div>
+						</td><td>
+					</table>
+				</fieldset>
+				<br>
+			  </td></tr>
+			</table>
+			<input type='hidden' name='key' class='hidden_key' id='key2' value='' />
+			<input id='color_correction_apply' type='submit' value='Apply'/> <input id='color_correction_defaults' type='button' value='Defaults' onclick='setDefaultColors();'/>
+			</form>
+		</div>
+	</div> </td></tr></table>
+
+
+</td><td></td></tr></table>
+</body></HTML>
