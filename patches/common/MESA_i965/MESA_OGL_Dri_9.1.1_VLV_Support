@@ -1,0 +1,253 @@
+diff -rupN mesa-9.1.1/include/pci_ids/i965_pci_ids.h mesa-9.1.1-rgb565/include/pci_ids/i965_pci_ids.h
+--- mesa-9.1.1/include/pci_ids/i965_pci_ids.h	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/include/pci_ids/i965_pci_ids.h	2013-11-22 16:56:50.358624260 -0800
+@@ -26,6 +26,8 @@ CHIPSET(0x0156, IVYBRIDGE_M_GT1, ivb_gt1
+ CHIPSET(0x0166, IVYBRIDGE_M_GT2, ivb_gt2)
+ CHIPSET(0x015a, IVYBRIDGE_S_GT1, ivb_gt1)
+ CHIPSET(0x016a, IVYBRIDGE_S_GT2, ivb_gt2)
++CHIPSET(0x0f30, VALLEYVIEW_PO, ivb_gt1)
++CHIPSET(0x0f31, VALLEYVIEW_A0, ivb_gt1)
+ CHIPSET(0x0402, HASWELL_GT1, hsw_gt1)
+ CHIPSET(0x0412, HASWELL_GT2, hsw_gt2)
+ CHIPSET(0x0422, HASWELL_GT2_PLUS, hsw_gt2)
+diff -rupN mesa-9.1.1/src/egl/drivers/dri2/platform_wayland.c mesa-9.1.1-rgb565/src/egl/drivers/dri2/platform_wayland.c
+--- mesa-9.1.1/src/egl/drivers/dri2/platform_wayland.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/egl/drivers/dri2/platform_wayland.c	2013-11-22 17:12:19.032716392 -0800
+@@ -42,7 +42,8 @@
+ 
+ enum wl_drm_format_flags {
+    HAS_ARGB8888 = 1,
+-   HAS_XRGB8888 = 2
++   HAS_XRGB8888 = 2,
++   HAS_RGB565 = 4,
+ };
+ 
+ static void
+@@ -132,7 +133,9 @@ dri2_create_surface(_EGLDriver *drv, _EG
+    if (!_eglInitSurface(&dri2_surf->base, disp, type, conf, attrib_list))
+       goto cleanup_surf;
+ 
+-   if (conf->AlphaSize == 0)
++   if (conf->RedSize == 5)
++      dri2_surf->format = WL_DRM_FORMAT_RGB565;
++   else if (conf-> AlphaSize == 0)
+       dri2_surf->format = WL_DRM_FORMAT_XRGB8888;
+    else
+       dri2_surf->format = WL_DRM_FORMAT_ARGB8888;
+@@ -613,6 +616,9 @@ drm_handle_format(void *data, struct wl_
+    case WL_DRM_FORMAT_XRGB8888:
+       dri2_dpy->formats |= HAS_XRGB8888;
+       break;
++   case WL_DRM_FORMAT_RGB565:
++      dri2_dpy->formats |= HAS_RGB565;
++      break;
+    }
+ }
+ 
+@@ -657,6 +663,7 @@ dri2_initialize_wayland(_EGLDriver *drv,
+    static const unsigned int argb_masks[4] =
+       { 0xff0000, 0xff00, 0xff, 0xff000000 };
+    static const unsigned int rgb_masks[4] = { 0xff0000, 0xff00, 0xff, 0 };
++   static const unsigned int rgb565_masks[4] = { 0xf800, 0x07e0, 0x001f, 0 };
+ 
+    drv->API.CreateWindowSurface = dri2_create_window_surface;
+    drv->API.DestroySurface = dri2_destroy_surface;
+@@ -724,6 +731,8 @@ dri2_initialize_wayland(_EGLDriver *drv,
+ 	 dri2_add_config(disp, config, i + 1, 0, types, NULL, rgb_masks);
+       if (dri2_dpy->formats & HAS_ARGB8888)
+ 	 dri2_add_config(disp, config, i + 1, 0, types, NULL, argb_masks);
++      if (dri2_dpy->formats & HAS_RGB565)
++	 dri2_add_config(disp, config, i + 1, 0, types, NULL, rgb565_masks);
+    }
+ 
+    disp->Extensions.WL_bind_wayland_display = EGL_TRUE;
+diff -rupN mesa-9.1.1/src/egl/wayland/wayland-drm/wayland-drm.c mesa-9.1.1-rgb565/src/egl/wayland/wayland-drm/wayland-drm.c
+--- mesa-9.1.1/src/egl/wayland/wayland-drm/wayland-drm.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/egl/wayland/wayland-drm/wayland-drm.c	2013-11-22 17:15:10.024733356 -0800
+@@ -122,6 +122,7 @@ drm_create_buffer(struct wl_client *clie
+         case WL_DRM_FORMAT_ARGB8888:
+         case WL_DRM_FORMAT_XRGB8888:
+         case WL_DRM_FORMAT_YUYV:
++	case WL_DRM_FORMAT_RGB565:
+                 break;
+         default:
+                 wl_resource_post_error(resource,
+@@ -196,6 +197,8 @@ bind_drm(struct wl_client *client, void
+ 			       WL_DRM_FORMAT_ARGB8888);
+ 	wl_resource_post_event(resource, WL_DRM_FORMAT,
+ 			       WL_DRM_FORMAT_XRGB8888);
++	wl_resource_post_event(resource, WL_DRM_FORMAT,
++				WL_DRM_FORMAT_RGB565);
+         wl_resource_post_event(resource, WL_DRM_FORMAT, WL_DRM_FORMAT_YUV410);
+         wl_resource_post_event(resource, WL_DRM_FORMAT, WL_DRM_FORMAT_YUV411);
+         wl_resource_post_event(resource, WL_DRM_FORMAT, WL_DRM_FORMAT_YUV420);
+diff -rupN mesa-9.1.1/src/gbm/backends/dri/gbm_dri.c mesa-9.1.1-rgb565/src/gbm/backends/dri/gbm_dri.c
+--- mesa-9.1.1/src/gbm/backends/dri/gbm_dri.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/gbm/backends/dri/gbm_dri.c	2013-11-22 17:18:39.867754174 -0800
+@@ -388,6 +388,9 @@ gbm_dri_bo_import(struct gbm_device *gbm
+       case WL_DRM_FORMAT_ARGB8888:
+          gbm_format = GBM_FORMAT_ARGB8888;
+          break;
++      case WL_DRM_FORMAT_RGB565:
++	 gbm_format = GBM_FORMAT_RGB565;
++	 break;
+       case WL_DRM_FORMAT_YUYV:
+          gbm_format = GBM_FORMAT_YUYV;
+          break;
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i915/intel_context.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/i915/intel_context.c
+--- mesa-9.1.1/src/mesa/drivers/dri/i915/intel_context.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i915/intel_context.c	2013-11-22 16:56:50.361624260 -0800
+@@ -675,7 +675,7 @@ intelInitContext(struct intel_context *i
+    intel->gen = intelScreen->gen;
+ 
+    const int devID = intelScreen->deviceID;
+-   if (IS_SNB_GT1(devID) || IS_IVB_GT1(devID) || IS_HSW_GT1(devID))
++   if (IS_SNB_GT1(devID) || IS_IVB_GT1(devID) || IS_HSW_GT1(devID) || IS_VALLEYVIEW(devID))
+       intel->gt = 1;
+    else if (IS_SNB_GT2(devID) || IS_IVB_GT2(devID) || IS_HSW_GT2(devID))
+       intel->gt = 2;
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i915/intel_screen.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/i915/intel_screen.c
+--- mesa-9.1.1/src/mesa/drivers/dri/i915/intel_screen.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i915/intel_screen.c	2013-11-22 17:17:08.913745151 -0800
+@@ -202,6 +202,9 @@ static struct intel_image_format intel_i
+    { __DRI_IMAGE_FOURCC_XRGB8888, __DRI_IMAGE_COMPONENTS_RGB, 1,
+      { { 0, 0, 0, __DRI_IMAGE_FORMAT_XRGB8888, 4 }, } },
+ 
++   { __DRI_IMAGE_FOURCC_RGB565, __DRI_IMAGE_COMPONENTS_RGB, 1,
++     { { 0, 0, 0, __DRI_IMAGE_FORMAT_RGB565, 2 } } },
++
+    { __DRI_IMAGE_FOURCC_YUV410, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+      { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+        { 1, 2, 2, __DRI_IMAGE_FORMAT_R8, 1 },
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i965/brw_context.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/brw_context.c
+--- mesa-9.1.1/src/mesa/drivers/dri/i965/brw_context.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/brw_context.c	2013-11-22 16:56:50.359624260 -0800
+@@ -295,7 +295,14 @@ brwCreateContext(int api,
+ 	 brw->urb.max_gs_entries = 640;
+       }
+    } else if (intel->gen == 7) {
+-      if (intel->gt == 1) {
++      if (intel->intelScreen->deviceID == PCI_CHIP_VALLEYVIEW_PO) {
++	 brw->max_wm_threads = 16;
++	 brw->max_vs_threads = 16;
++	 brw->max_gs_threads = 16;
++	 brw->urb.size = 96;
++	 brw->urb.max_vs_entries = 512;
++	 brw->urb.max_gs_entries = 192;
++      } else if (intel->gt == 1) {
+ 	 brw->max_wm_threads = 48;
+ 	 brw->max_vs_threads = 36;
+ 	 brw->max_gs_threads = 36;
+@@ -310,7 +317,7 @@ brwCreateContext(int api,
+ 	 brw->urb.max_vs_entries = 704;
+ 	 brw->urb.max_gs_entries = 320;
+       } else {
+-	 assert(!"Unknown gen7 device.");
++	 assert(!"Unknown Ivybridge device.");
+       }
+    } else if (intel->gen == 6) {
+       if (intel->gt == 2) {
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i965/brw_defines.h mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/brw_defines.h
+--- mesa-9.1.1/src/mesa/drivers/dri/i965/brw_defines.h	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/brw_defines.h	2013-11-22 16:56:50.360624260 -0800
+@@ -1118,7 +1118,7 @@ enum brw_message_target {
+ #define _3DSTATE_URB_GS                         0x7833 /* GEN7+ */
+ # define GEN7_URB_ENTRY_SIZE_SHIFT                      16
+ # define GEN7_URB_STARTING_ADDRESS_SHIFT                25
+-
++# define GEN7_URB_VS_MIN_ENTRIES                        32
+ #define _3DSTATE_PUSH_CONSTANT_ALLOC_VS         0x7912 /* GEN7+ */
+ #define _3DSTATE_PUSH_CONSTANT_ALLOC_PS         0x7916 /* GEN7+ */
+ # define GEN7_PUSH_CONSTANT_BUFFER_OFFSET_SHIFT         16
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i965/gen7_urb.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/gen7_urb.c
+--- mesa-9.1.1/src/mesa/drivers/dri/i965/gen7_urb.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/gen7_urb.c	2013-11-22 16:56:50.360624260 -0800
+@@ -88,6 +88,13 @@ gen7_upload_urb(struct brw_context *brw)
+    if (nr_vs_entries > brw->urb.max_vs_entries)
+       nr_vs_entries = brw->urb.max_vs_entries;
+ 
++    /* If the number of URB Allocation Size is smaller than 9 512 bit
++     * units set the number or URB to Entries to 32
++     */
++    if(brw->urb.vs_size < 9)
++       nr_vs_entries = GEN7_URB_VS_MIN_ENTRIES;
++
++
+    /* According to volume 2a, nr_vs_entries must be a multiple of 8. */
+    brw->urb.nr_vs_entries = ROUND_DOWN_TO(nr_vs_entries, 8);
+ 
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i965/intel_context.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/intel_context.c
+--- mesa-9.1.1/src/mesa/drivers/dri/i965/intel_context.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/intel_context.c	2013-11-22 16:56:50.361624260 -0800
+@@ -675,7 +675,7 @@ intelInitContext(struct intel_context *i
+    intel->gen = intelScreen->gen;
+ 
+    const int devID = intelScreen->deviceID;
+-   if (IS_SNB_GT1(devID) || IS_IVB_GT1(devID) || IS_HSW_GT1(devID))
++   if (IS_SNB_GT1(devID) || IS_IVB_GT1(devID) || IS_HSW_GT1(devID) || IS_VALLEYVIEW(devID))
+       intel->gt = 1;
+    else if (IS_SNB_GT2(devID) || IS_IVB_GT2(devID) || IS_HSW_GT2(devID))
+       intel->gt = 2;
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/i965/intel_screen.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/intel_screen.c
+--- mesa-9.1.1/src/mesa/drivers/dri/i965/intel_screen.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/i965/intel_screen.c	2013-11-22 17:17:08.913745151 -0800
+@@ -202,6 +202,9 @@ static struct intel_image_format intel_i
+    { __DRI_IMAGE_FOURCC_XRGB8888, __DRI_IMAGE_COMPONENTS_RGB, 1,
+      { { 0, 0, 0, __DRI_IMAGE_FORMAT_XRGB8888, 4 }, } },
+ 
++   { __DRI_IMAGE_FOURCC_RGB565, __DRI_IMAGE_COMPONENTS_RGB, 1,
++     { { 0, 0, 0, __DRI_IMAGE_FORMAT_RGB565, 2 } } },
++
+    { __DRI_IMAGE_FOURCC_YUV410, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+      { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+        { 1, 2, 2, __DRI_IMAGE_FORMAT_R8, 1 },
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/intel/intel_chipset.h mesa-9.1.1-rgb565/src/mesa/drivers/dri/intel/intel_chipset.h
+--- mesa-9.1.1/src/mesa/drivers/dri/intel/intel_chipset.h	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/intel/intel_chipset.h	2013-11-22 16:56:50.361624260 -0800
+@@ -87,6 +87,9 @@
+ #define PCI_CHIP_IVYBRIDGE_S_GT1        0x015a  /* Server */
+ #define PCI_CHIP_IVYBRIDGE_S_GT2        0x016a
+ 
++#define PCI_CHIP_VALLEYVIEW_PO          0x0f30  /* Power on */
++#define PCI_CHIP_VALLEYVIEW_A0          0x0f31  /* Valley View A0 */
++
+ #define PCI_CHIP_HASWELL_GT1            0x0402 /* Desktop */
+ #define PCI_CHIP_HASWELL_GT2            0x0412
+ #define PCI_CHIP_HASWELL_GT2_PLUS       0x0422
+@@ -190,7 +193,11 @@
+ 
+ #define IS_IVYBRIDGE(devid)     (IS_IVB_GT1(devid) || IS_IVB_GT2(devid))
+ 
++#define IS_VALLEYVIEW(devid)    (devid == PCI_CHIP_VALLEYVIEW_PO || \
++                                 devid == PCI_CHIP_VALLEYVIEW_A0)
++
+ #define IS_GEN7(devid)	        (IS_IVYBRIDGE(devid) || \
++                                 IS_VALLEYVIEW(devid) || \
+ 				 IS_HASWELL(devid))
+ 
+ #define IS_HSW_GT1(devid)	(devid == PCI_CHIP_HASWELL_GT1 || \
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/intel/intel_context.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/intel/intel_context.c
+--- mesa-9.1.1/src/mesa/drivers/dri/intel/intel_context.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/intel/intel_context.c	2013-11-22 16:56:50.361624260 -0800
+@@ -675,7 +675,7 @@ intelInitContext(struct intel_context *i
+    intel->gen = intelScreen->gen;
+ 
+    const int devID = intelScreen->deviceID;
+-   if (IS_SNB_GT1(devID) || IS_IVB_GT1(devID) || IS_HSW_GT1(devID))
++   if (IS_SNB_GT1(devID) || IS_IVB_GT1(devID) || IS_HSW_GT1(devID) || IS_VALLEYVIEW(devID))
+       intel->gt = 1;
+    else if (IS_SNB_GT2(devID) || IS_IVB_GT2(devID) || IS_HSW_GT2(devID))
+       intel->gt = 2;
+diff -rupN mesa-9.1.1/src/mesa/drivers/dri/intel/intel_screen.c mesa-9.1.1-rgb565/src/mesa/drivers/dri/intel/intel_screen.c
+--- mesa-9.1.1/src/mesa/drivers/dri/intel/intel_screen.c	2013-03-19 17:14:38.000000000 -0700
++++ mesa-9.1.1-rgb565/src/mesa/drivers/dri/intel/intel_screen.c	2013-11-22 17:17:08.913745151 -0800
+@@ -202,6 +202,9 @@ static struct intel_image_format intel_i
+    { __DRI_IMAGE_FOURCC_XRGB8888, __DRI_IMAGE_COMPONENTS_RGB, 1,
+      { { 0, 0, 0, __DRI_IMAGE_FORMAT_XRGB8888, 4 }, } },
+ 
++   { __DRI_IMAGE_FOURCC_RGB565, __DRI_IMAGE_COMPONENTS_RGB, 1,
++     { { 0, 0, 0, __DRI_IMAGE_FORMAT_RGB565, 2 } } },
++
+    { __DRI_IMAGE_FOURCC_YUV410, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+      { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+        { 1, 2, 2, __DRI_IMAGE_FORMAT_R8, 1 },

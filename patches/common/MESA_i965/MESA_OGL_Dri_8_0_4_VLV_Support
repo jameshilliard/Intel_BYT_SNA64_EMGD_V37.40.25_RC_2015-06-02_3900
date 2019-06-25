@@ -1,0 +1,142 @@
+diff -rupN Mesa-8.0.4/include/pci_ids/i965_pci_ids.h Mesa-8.0.4_new/include/pci_ids/i965_pci_ids.h
+--- Mesa-8.0.4/include/pci_ids/i965_pci_ids.h	2012-05-18 12:27:14.000000000 +0800
++++ Mesa-8.0.4_new/include/pci_ids/i965_pci_ids.h	2012-09-25 13:29:30.531913777 +0800
+@@ -26,3 +26,8 @@ CHIPSET(0x0156, IVYBRIDGE_M_GT1, ivb_gt1
+ CHIPSET(0x0166, IVYBRIDGE_M_GT2, ivb_gt2)
+ CHIPSET(0x015a, IVYBRIDGE_S_GT1, ivb_gt1)
+ CHIPSET(0x016a, IVYBRIDGE_S_GT2, ivb_gt2)
++CHIPSET(0x0f30, VALLEYVIEW1, ivb_gt1)
++CHIPSET(0x0f31, VALLEYVIEW2, ivb_gt1)
++CHIPSET(0x0f32, VALLEYVIEW3, ivb_gt1)
++CHIPSET(0x0f33, VALLEYVIEW4, ivb_gt1)
++
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/i915/intel_context.c Mesa-8.0.4_new/src/mesa/drivers/dri/i915/intel_context.c
+--- Mesa-8.0.4/src/mesa/drivers/dri/i915/intel_context.c	2012-05-18 12:27:14.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/i915/intel_context.c	2012-09-25 13:31:46.839907767 +0800
+@@ -186,6 +186,12 @@ intelGetString(struct gl_context * ctx, 
+       case PCI_CHIP_IVYBRIDGE_S_GT2:
+ 	 chipset = "Intel(R) Ivybridge Server";
+ 	 break;
++       case PCI_CHIP_VLV1:
++       case PCI_CHIP_VLV2:
++       case PCI_CHIP_VLV3:
++       case PCI_CHIP_VLV4:
++ 	 chipset = "Intel(R) Valleyview";
++  	 break;
+       default:
+          chipset = "Unknown Intel Chipset";
+          break;
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/i965/brw_context.c Mesa-8.0.4_new/src/mesa/drivers/dri/i965/brw_context.c
+--- Mesa-8.0.4/src/mesa/drivers/dri/i965/brw_context.c	2012-03-23 01:10:07.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/i965/brw_context.c	2012-09-25 13:37:42.308892069 +0800
+@@ -238,7 +238,21 @@ brwCreateContext(int api,
+    }
+ 
+    /* WM maximum threads is number of EUs times number of threads per EU. */
+-   if (intel->gen >= 7) {
++   if (intel->intelScreen->deviceID == PCI_CHIP_VLV2) {
++      brw->max_wm_threads = 48;
++      brw->max_vs_threads = 36;
++      brw->max_gs_threads = 36;
++      brw->urb.size = 96;
++      brw->urb.max_vs_entries = 512;
++      brw->urb.max_gs_entries = 192;
++   } else if (IS_VALLEYVIEW(intel->intelScreen->deviceID)) {
++      brw->max_wm_threads = 16;
++      brw->max_vs_threads = 16;
++      brw->max_gs_threads = 16;
++      brw->urb.size = 96;
++      brw->urb.max_vs_entries = 512;
++      brw->urb.max_gs_entries = 192;
++   } else if (intel->gen >= 7) {
+       if (intel->gt == 1) {
+ 	 brw->max_wm_threads = 86;
+ 	 brw->max_vs_threads = 36;
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/i965/brw_defines.h Mesa-8.0.4_new/src/mesa/drivers/dri/i965/brw_defines.h
+--- Mesa-8.0.4/src/mesa/drivers/dri/i965/brw_defines.h	2012-03-23 01:10:07.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/i965/brw_defines.h	2012-09-25 13:40:31.943884578 +0800
+@@ -1017,6 +1017,7 @@ enum brw_message_target {
+ #define _3DSTATE_URB_GS                         0x7833 /* GEN7+ */
+ # define GEN7_URB_ENTRY_SIZE_SHIFT                      16
+ # define GEN7_URB_STARTING_ADDRESS_SHIFT                25
++# define GEN7_URB_VS_MIN_ENTRIES                        32
+ 
+ #define _3DSTATE_PUSH_CONSTANT_ALLOC_VS         0x7912 /* GEN7+ */
+ #define _3DSTATE_PUSH_CONSTANT_ALLOC_PS         0x7916 /* GEN7+ */
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/i965/gen7_urb.c Mesa-8.0.4_new/src/mesa/drivers/dri/i965/gen7_urb.c
+--- Mesa-8.0.4/src/mesa/drivers/dri/i965/gen7_urb.c	2012-03-23 01:10:07.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/i965/gen7_urb.c	2012-09-25 13:42:10.529880222 +0800
+@@ -88,6 +88,12 @@ gen7_upload_urb(struct brw_context *brw)
+    if (nr_vs_entries > brw->urb.max_vs_entries)
+       nr_vs_entries = brw->urb.max_vs_entries;
+ 
++    /* If the number of URB Allocation Size is smaller than 9 512 bit
++     * units set the number or URB to Entries to 32
++     */
++    if(brw->urb.vs_size < 9)
++       nr_vs_entries = GEN7_URB_VS_MIN_ENTRIES;
++ 
+    /* According to volume 2a, nr_vs_entries must be a multiple of 8. */
+    brw->urb.nr_vs_entries = ROUND_DOWN_TO(nr_vs_entries, 8);
+ 
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/i965/intel_context.c Mesa-8.0.4_new/src/mesa/drivers/dri/i965/intel_context.c
+--- Mesa-8.0.4/src/mesa/drivers/dri/i965/intel_context.c	2012-05-18 12:27:14.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/i965/intel_context.c	2012-09-25 13:31:46.839907767 +0800
+@@ -186,6 +186,12 @@ intelGetString(struct gl_context * ctx, 
+       case PCI_CHIP_IVYBRIDGE_S_GT2:
+ 	 chipset = "Intel(R) Ivybridge Server";
+ 	 break;
++       case PCI_CHIP_VLV1:
++       case PCI_CHIP_VLV2:
++       case PCI_CHIP_VLV3:
++       case PCI_CHIP_VLV4:
++ 	 chipset = "Intel(R) Valleyview";
++  	 break;
+       default:
+          chipset = "Unknown Intel Chipset";
+          break;
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/intel/intel_chipset.h Mesa-8.0.4_new/src/mesa/drivers/dri/intel/intel_chipset.h
+--- Mesa-8.0.4/src/mesa/drivers/dri/intel/intel_chipset.h	2012-05-18 12:27:14.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/intel/intel_chipset.h	2012-09-25 13:44:04.590875186 +0800
+@@ -87,6 +87,11 @@
+ #define PCI_CHIP_IVYBRIDGE_S_GT1        0x015a  /* Server */
+ #define PCI_CHIP_IVYBRIDGE_S_GT2        0x016a
+ 
++#define PCI_CHIP_VLV1                   0x0f30
++#define PCI_CHIP_VLV2                   0x0f31
++#define PCI_CHIP_VLV3	                0x0f32
++#define PCI_CHIP_VLV4	                0x0f33
++
+ #define IS_MOBILE(devid)	(devid == PCI_CHIP_I855_GM || \
+ 				 devid == PCI_CHIP_I915_GM || \
+ 				 devid == PCI_CHIP_I945_GM || \
+@@ -153,7 +158,12 @@
+ 
+ #define IS_IVYBRIDGE(devid)     (IS_IVB_GT1(devid) || IS_IVB_GT2(devid))
+ 
+-#define IS_GEN7(devid)	        IS_IVYBRIDGE(devid)
++#define IS_VALLEYVIEW(devid)    (devid == PCI_CHIP_VLV1 || \
++				 devid == PCI_CHIP_VLV2 || \
++				 devid == PCI_CHIP_VLV3 || \
++				 devid == PCI_CHIP_VLV4)
++
++#define IS_GEN7(devid)	        (IS_IVYBRIDGE(devid) || IS_VALLEYVIEW(devid))
+ 
+ #define IS_965(devid)		(IS_GEN4(devid) || \
+ 				 IS_G4X(devid) || \
+diff -rupN Mesa-8.0.4/src/mesa/drivers/dri/intel/intel_context.c Mesa-8.0.4_new/src/mesa/drivers/dri/intel/intel_context.c
+--- Mesa-8.0.4/src/mesa/drivers/dri/intel/intel_context.c	2012-05-18 12:27:14.000000000 +0800
++++ Mesa-8.0.4_new/src/mesa/drivers/dri/intel/intel_context.c	2012-09-25 13:31:46.839907767 +0800
+@@ -186,6 +186,12 @@ intelGetString(struct gl_context * ctx, 
+       case PCI_CHIP_IVYBRIDGE_S_GT2:
+ 	 chipset = "Intel(R) Ivybridge Server";
+ 	 break;
++       case PCI_CHIP_VLV1:
++       case PCI_CHIP_VLV2:
++       case PCI_CHIP_VLV3:
++       case PCI_CHIP_VLV4:
++ 	 chipset = "Intel(R) Valleyview";
++  	 break;
+       default:
+          chipset = "Unknown Intel Chipset";
+          break;

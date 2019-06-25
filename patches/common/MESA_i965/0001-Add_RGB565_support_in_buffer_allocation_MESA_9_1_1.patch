@@ -1,0 +1,50 @@
+From f37fb8baa3703f88184e52189048bf29cc42768e Mon Sep 17 00:00:00 2001
+From: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Date: Tue, 11 Feb 2014 19:09:11 -0800
+Subject: [PATCH] egl: RGB565 buffers should be allocated with format=16
+
+While allocating RGB565 buffers through the DRI driver, format
+should be 16 instead of 32 to make sure that the pitch would
+be calculated correctly.
+
+Reviewed by: Singh, Satyeshwar <satyeshwar.singh@intel.com>
+Reviewed-by: Matt Roper <matthew.d.roper@intel.com>
+Reviewed-by: Sinclair Yeh <sinclair.yeh@intel.com>
+---
+ src/egl/drivers/dri2/platform_wayland.c |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+index 755c325..7e5dfb6 100644
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -264,6 +264,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf, __DRIbuffer *buffer)
+    struct dri2_egl_display *dri2_dpy =
+       dri2_egl_display(dri2_surf->base.Resource.Display);
+    int i;
++   const unsigned int format = (dri2_surf->format == WL_DRM_FORMAT_RGB565) ? 16 : 32;
+
+    /* There might be a buffer release already queued that wasn't processed */
+    wl_display_dispatch_queue_pending(dri2_dpy->wl_dpy, dri2_dpy->wl_queue);
+@@ -286,7 +287,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf, __DRIbuffer *buffer)
+    if (dri2_surf->back->dri_buffer == NULL) {
+       dri2_surf->back->dri_buffer =
+          dri2_dpy->dri2->allocateBuffer(dri2_dpy->dri_screen,
+-                                        __DRI_BUFFER_BACK_LEFT, 32,
++                                        __DRI_BUFFER_BACK_LEFT, format,
+                                         dri2_surf->base.Width,
+                                         dri2_surf->base.Height);
+       dri2_surf->back->age = 0;
+@@ -396,7 +397,8 @@ dri2_get_buffers(__DRIdrawable * driDrawable,
+ {
+    unsigned int *attachments_with_format;
+    __DRIbuffer *buffer;
+-   const unsigned int format = 32;
++   struct dri2_egl_surface *dri2_surf = loaderPrivate;
++   const unsigned int format = (dri2_surf->format == WL_DRM_FORMAT_RGB565) ? 16 : 32;
+    int i;
+
+    attachments_with_format = calloc(count * 2, sizeof(unsigned int));
+--
+1.7.5.4
+

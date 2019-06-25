@@ -1,0 +1,301 @@
+diff --git a/gst-libs/gst/vaapi/gstvaapidecoder_vc1.c b/gst-libs/gst/vaapi/gstvaapidecoder_vc1.c
+index 2fb242e..b0f4cd8 100644
+--- a/gst-libs/gst/vaapi/gstvaapidecoder_vc1.c
++++ b/gst-libs/gst/vaapi/gstvaapidecoder_vc1.c
+@@ -535,7 +535,7 @@ has_MVTYPEMB_bitplane(GstVaapiDecoderVC1 *decoder)
+ 
+     if (seq_hdr->profile == GST_VC1_PROFILE_ADVANCED) {
+         GstVC1PicAdvanced * const pic = &frame_hdr->pic.advanced;
+-        if (pic->mvtypemb)
++        if (pic->mvtypemb || frame_hdr->pic.advanced.fcm != GST_VC1_FRAME_PROGRESSIVE)
+             return 0;
+         mvmode  = pic->mvmode;
+         mvmode2 = pic->mvmode2;
+@@ -562,7 +562,7 @@ has_SKIPMB_bitplane(GstVaapiDecoderVC1 *decoder)
+ 
+     if (seq_hdr->profile == GST_VC1_PROFILE_ADVANCED) {
+         GstVC1PicAdvanced * const pic = &frame_hdr->pic.advanced;
+-        if (pic->skipmb)
++        if (pic->skipmb || frame_hdr->pic.advanced.fcm == GST_VC1_FIELD_INTERLACE)
+             return 0;
+     }
+     else {
+@@ -595,6 +595,22 @@ has_DIRECTMB_bitplane(GstVaapiDecoderVC1 *decoder)
+ }
+ 
+ static inline int
++has_FIELDTX_bitplane(GstVaapiDecoderVC1 *decoder)
++{
++    GstVaapiDecoderVC1Private * const priv = &decoder->priv;
++    GstVC1SeqHdr * const seq_hdr = &priv->seq_hdr;
++    GstVC1FrameHdr * const frame_hdr = &priv->frame_hdr;
++    GstVC1PicAdvanced * const pic = &frame_hdr->pic.advanced;
++
++    if (seq_hdr->profile != GST_VC1_PROFILE_ADVANCED)
++        return 0;
++    if (pic->fieldtx)
++        return 0;
++    return ((pic->fcm == GST_VC1_FRAME_INTERLACE) && (frame_hdr->ptype == GST_VC1_PICTURE_TYPE_I ||
++            frame_hdr->ptype == GST_VC1_PICTURE_TYPE_B));
++}
++
++static inline int
+ has_ACPRED_bitplane(GstVaapiDecoderVC1 *decoder)
+ {
+     GstVaapiDecoderVC1Private * const priv = &decoder->priv;
+@@ -720,7 +736,7 @@ fill_picture_advanced(GstVaapiDecoderVC1 *decoder, GstVaapiPicture *picture)
+     pic_param->range_mapping_fields.bits.chroma                     = entrypoint_hdr->range_mapuv;
+     pic_param->b_picture_fraction                                   = get_BFRACTION(pic->bfraction);
+     pic_param->cbp_table                                            = pic->cbptab;
+-    pic_param->mb_mode_table                                        = 0; /* XXX: interlaced frame */
++    pic_param->mb_mode_table                                        = pic->mbmodetab; /* XXX: interlaced frame */
+     pic_param->range_reduction_frame                                = 0; /* simple/main profile only */
+     pic_param->rounding_control                                     = pic->rndctrl;
+     pic_param->post_processing                                      = pic->postproc;
+@@ -729,23 +745,34 @@ fill_picture_advanced(GstVaapiDecoderVC1 *decoder, GstVaapiPicture *picture)
+     pic_param->luma_shift                                           = pic->lumshift;
+     pic_param->picture_fields.bits.frame_coding_mode                = pic->fcm;
+     pic_param->picture_fields.bits.top_field_first                  = pic->tff;
+-    pic_param->picture_fields.bits.is_first_field                   = pic->fcm == 0; /* XXX: interlaced frame */
++    pic_param->picture_fields.bits.is_first_field                   = pic->is_first_field; /* XXX: interlaced frame */
+     pic_param->picture_fields.bits.intensity_compensation           = pic->mvmode == GST_VC1_MVMODE_INTENSITY_COMP;
+     pic_param->raw_coding.flags.mv_type_mb                          = pic->mvtypemb;
+     pic_param->raw_coding.flags.direct_mb                           = pic->directmb;
+     pic_param->raw_coding.flags.skip_mb                             = pic->skipmb;
++    pic_param->raw_coding.flags.field_tx                            = pic->fieldtx;
++    pic_param->raw_coding.flags.forward_mb                          = pic->forwardmb;
+     pic_param->raw_coding.flags.ac_pred                             = pic->acpred;
+     pic_param->raw_coding.flags.overflags                           = pic->overflags;
+     pic_param->bitplane_present.flags.bp_mv_type_mb                 = has_MVTYPEMB_bitplane(decoder);
+     pic_param->bitplane_present.flags.bp_direct_mb                  = has_DIRECTMB_bitplane(decoder);
+     pic_param->bitplane_present.flags.bp_skip_mb                    = has_SKIPMB_bitplane(decoder);
++    pic_param->bitplane_present.flags.bp_field_tx                   = has_FIELDTX_bitplane(decoder);
++    pic_param->bitplane_present.flags.bp_forward_mb                 = 0;	/* Todo */
+     pic_param->bitplane_present.flags.bp_ac_pred                    = has_ACPRED_bitplane(decoder);
+     pic_param->bitplane_present.flags.bp_overflags                  = has_OVERFLAGS_bitplane(decoder);
+     pic_param->reference_fields.bits.reference_distance_flag        = entrypoint_hdr->refdist_flag;
++    pic_param->reference_fields.bits.reference_distance	            = pic->refdist;
++    pic_param->reference_fields.bits.num_reference_pictures         = pic->numref;
++    pic_param->reference_fields.bits.reference_field_pic_indicator  = pic->reffield;
+     pic_param->mv_fields.bits.mv_table                              = pic->mvtab;
++    pic_param->mv_fields.bits.two_mv_block_pattern_table            = pic->mvbptab2; /* Todo */
++    pic_param->mv_fields.bits.four_mv_switch                        = pic->mvswitch4;
++    pic_param->mv_fields.bits.four_mv_block_pattern_table           = pic->mvbptab4;
+     pic_param->mv_fields.bits.extended_mv_flag                      = entrypoint_hdr->extended_mv;
+     pic_param->mv_fields.bits.extended_mv_range                     = pic->mvrange;
+     pic_param->mv_fields.bits.extended_dmv_flag                     = entrypoint_hdr->extended_dmv;
++    pic_param->mv_fields.bits.extended_dmv_range                    = pic->dmvrange;
+     pic_param->pic_quantizer_fields.bits.dquant                     = entrypoint_hdr->dquant;
+     pic_param->pic_quantizer_fields.bits.quantizer                  = entrypoint_hdr->quantizer;
+     pic_param->transform_fields.bits.variable_sized_transform_flag  = entrypoint_hdr->vstransform;
+@@ -764,6 +791,7 @@ fill_picture(GstVaapiDecoderVC1 *decoder, GstVaapiPicture *picture)
+     GstVC1FrameHdr * const frame_hdr = &priv->frame_hdr;
+     GstVC1VopDquant * const vopdquant = &frame_hdr->vopdquant;
+     GstVaapiPicture *prev_picture, *next_picture;
++    GstVC1PicAdvanced * const pic = &frame_hdr->pic.advanced;
+ 
+     /* Fill in VAPictureParameterBufferVC1 (common fields) */
+     pic_param->forward_reference_picture                            = VA_INVALID_ID;
+@@ -813,16 +841,30 @@ fill_picture(GstVaapiDecoderVC1 *decoder, GstVaapiPicture *picture)
+ 
+     switch (picture->type) {
+     case GST_VAAPI_PICTURE_TYPE_B:
+-        if (next_picture)
++        if (pic_param->picture_fields.bits.frame_coding_mode == GST_VC1_FIELD_INTERLACE &&
++            pic_param->picture_fields.bits.is_first_field &&
++            pic_param->reference_fields.bits.num_reference_pictures == 0) {
++            pic_param->backward_reference_picture = picture->surface_id;
++        } else if (next_picture) {
+             pic_param->backward_reference_picture = next_picture->surface_id;
+-        if (prev_picture)
++        }
++        if (pic_param->picture_fields.bits.frame_coding_mode == GST_VC1_FIELD_INTERLACE &&
++            !pic_param->picture_fields.bits.is_first_field &&
++            pic_param->reference_fields.bits.num_reference_pictures == 0) {
++        } else if (prev_picture) {
+             pic_param->forward_reference_picture = prev_picture->surface_id;
+-        else if (!priv->closed_entry)
++        } else if (!priv->closed_entry) {
+             GST_VAAPI_PICTURE_FLAG_SET(picture, GST_VAAPI_PICTURE_FLAG_SKIPPED);
++        }
+         break;
+     case GST_VAAPI_PICTURE_TYPE_P:
+-        if (prev_picture)
++        if (pic_param->picture_fields.bits.frame_coding_mode == GST_VC1_FIELD_INTERLACE &&
++            !pic_param->picture_fields.bits.is_first_field &&
++            pic_param->reference_fields.bits.num_reference_pictures == 0) {
++            pic_param->forward_reference_picture = picture->surface_id;
++        } else if (prev_picture) {
+             pic_param->forward_reference_picture = prev_picture->surface_id;
++        }
+         break;
+     default:
+         break;
+@@ -841,11 +883,11 @@ fill_picture(GstVaapiDecoderVC1 *decoder, GstVaapiPicture *picture)
+         case GST_VAAPI_PICTURE_TYPE_B:
+             bitplanes[0] = pic_param->bitplane_present.flags.bp_direct_mb  ? priv->bitplanes->directmb  : NULL;
+             bitplanes[1] = pic_param->bitplane_present.flags.bp_skip_mb    ? priv->bitplanes->skipmb    : NULL;
+-            bitplanes[2] = NULL; /* XXX: interlaced frame (FORWARD plane) */
++            bitplanes[2] = pic_param->bitplane_present.flags.bp_forward_mb ? priv->bitplanes->forwardmb : NULL;
+             break;
+         case GST_VAAPI_PICTURE_TYPE_BI:
+         case GST_VAAPI_PICTURE_TYPE_I:
+-            bitplanes[0] = NULL; /* XXX: interlaced frame (FIELDTX plane) */
++            bitplanes[0] = pic_param->bitplane_present.flags.bp_field_tx   ? priv->bitplanes->fieldtx   : NULL;
+             bitplanes[1] = pic_param->bitplane_present.flags.bp_ac_pred    ? priv->bitplanes->acpred    : NULL;
+             bitplanes[2] = pic_param->bitplane_present.flags.bp_overflags  ? priv->bitplanes->overflags : NULL;
+             break;
+@@ -903,17 +945,21 @@ static GstVaapiDecoderStatus
+ decode_frame(GstVaapiDecoderVC1 *decoder, GstVC1BDU *rbdu, GstVC1BDU *ebdu)
+ {
+     GstVaapiDecoderVC1Private * const priv = &decoder->priv;
++    GstVC1AdvancedSeqHdr * const adv_hdr = &priv->seq_hdr.advanced;
+     GstVC1FrameHdr * const frame_hdr = &priv->frame_hdr;
+     GstVC1ParserResult result;
+     GstVaapiPicture * const picture = priv->current_picture;
+ 
+-    memset(frame_hdr, 0, sizeof(*frame_hdr));
++    if (ebdu->type == GST_VC1_FRAME)
++    	memset(frame_hdr, 0, sizeof(*frame_hdr));
++
+     result = gst_vc1_parse_frame_header(
+         rbdu->data + rbdu->offset,
+         rbdu->size,
+         frame_hdr,
+         &priv->seq_hdr,
+-        priv->bitplanes
++        priv->bitplanes,
++        ebdu->type == GST_VC1_FIELD ? 1 : 0
+     );
+     if (result != GST_VC1_PARSER_OK) {
+         GST_ERROR("failed to parse frame layer");
+@@ -954,7 +1000,21 @@ decode_frame(GstVaapiDecoderVC1 *decoder, GstVC1BDU *rbdu, GstVC1BDU *ebdu)
+         picture->poc = priv->last_non_b_picture->poc++;
+         priv->next_poc = priv->last_non_b_picture->poc + 1;
+     }
+-    picture->pts = GST_VAAPI_DECODER_CODEC_FRAME(decoder)->pts;
++
++    if (adv_hdr->interlace && frame_hdr->pic.advanced.fcm == GST_VC1_FIELD_INTERLACE) {
++        GST_VAAPI_PICTURE_FLAG_SET(picture, GST_VAAPI_PICTURE_FLAG_INTERLACED);
++        if (frame_hdr->pic.advanced.tff)
++            GST_VAAPI_PICTURE_FLAG_SET(picture, GST_VAAPI_PICTURE_FLAG_TFF);
++
++        if (frame_hdr->pic.advanced.is_first_field)
++            picture->pts = GST_VAAPI_DECODER_CODEC_FRAME(decoder)->pts;
++
++        if (frame_hdr->pic.advanced.tff & frame_hdr->pic.advanced.is_first_field)
++            picture->structure = GST_VAAPI_PICTURE_STRUCTURE_TOP_FIELD;
++        else
++            picture->structure = GST_VAAPI_PICTURE_STRUCTURE_BOTTOM_FIELD;
++    } else
++        picture->pts = GST_VAAPI_DECODER_CODEC_FRAME(decoder)->pts;
+ 
+     if (!fill_picture(decoder, picture))
+         return GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN;
+@@ -1051,6 +1111,7 @@ decode_ebdu(GstVaapiDecoderVC1 *decoder, GstVC1BDU *ebdu)
+         status = decode_entry_point(decoder, &rbdu, ebdu);
+         break;
+     case GST_VC1_FRAME:
++    case GST_VC1_FIELD:
+         status = decode_frame(decoder, &rbdu, ebdu);
+         break;
+     case GST_VC1_SLICE:
+@@ -1073,8 +1134,11 @@ decode_buffer(GstVaapiDecoderVC1 *decoder, guchar *buf, guint buf_size)
+     GstVaapiDecoderVC1Private * const priv = &decoder->priv;
+     GstVC1BDU ebdu;
+ 
+-    if (priv->has_codec_data) {
+-        ebdu.type      = GST_VC1_FRAME;
++    if (priv->has_codec_data && !(buf[0] == 0 && buf[1] == 0 && buf[2] == 1)) {
++        if (priv->current_picture->structure == GST_VAAPI_PICTURE_STRUCTURE_FRAME)
++            ebdu.type      = GST_VC1_FRAME;
++        else
++            ebdu.type      = GST_VC1_FIELD;
+         ebdu.sc_offset = 0;
+         ebdu.offset    = 0;
+     }
+@@ -1210,6 +1274,7 @@ gst_vaapi_decoder_vc1_parse(GstVaapiDecoder *base_decoder,
+     guint8 bdu_type;
+     guint size, buf_size, flags = 0;
+     gint ofs;
++    gboolean is_interlace = FALSE;
+ 
+     status = ensure_decoder(decoder);
+     if (status != GST_VAAPI_DECODER_STATUS_SUCCESS)
+@@ -1218,12 +1283,31 @@ gst_vaapi_decoder_vc1_parse(GstVaapiDecoder *base_decoder,
+     size = gst_adapter_available(adapter);
+ 
+     if (priv->has_codec_data) {
++        GstVaapiDecoderVC1Private * const priv = &decoder->priv;
++        GstVC1AdvancedSeqHdr * const adv_hdr = &priv->seq_hdr.advanced;
++
++        is_interlace = adv_hdr->interlace ? TRUE : FALSE;
++    }
++
++
++    if (priv->has_codec_data && (!is_interlace || scan_for_start_code(adapter, 0, size, NULL) < 0)) {
+         // Assume demuxer sends out plain frames
+         if (size < 1)
+             return GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA;
+         buf_size = size;
+         bdu_type = GST_VC1_FRAME;
+     }
++    else if (is_interlace && priv->has_codec_data && scan_for_start_code(adapter, 0, size, NULL) > 0) {
++        /* This is the case where we find start code within the input buffer, happens with wmv field interlace */
++        if (size < 1)
++            return GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA;
++        ofs = scan_for_start_code(adapter, 0, size, NULL);
++        if (ofs < 0)
++            /* FIXME: This may not be needed */
++            return GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA;
++        buf_size = ofs;
++        bdu_type = GST_VC1_FRAME;
++    } 
+     else {
+         if (size < 4)
+             return GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA;
+@@ -1238,8 +1322,8 @@ gst_vaapi_decoder_vc1_parse(GstVaapiDecoder *base_decoder,
+             scan_for_start_code(adapter, 4, size - 4, NULL);
+         if (ofs < 0) {
+             // Assume the whole packet is present if end-of-stream
+-            if (!at_eos)
+-                return GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA;
++            //if (!at_eos && !is_interlace)
++                //return GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA;
+             ofs = size;
+         }
+         buf_size = ofs;
+@@ -1259,6 +1343,7 @@ gst_vaapi_decoder_vc1_parse(GstVaapiDecoder *base_decoder,
+         flags |= GST_VAAPI_DECODER_UNIT_FLAG_FRAME_START;
+         break;
+     case GST_VC1_FRAME:
++    case GST_VC1_FIELD:
+         flags |= GST_VAAPI_DECODER_UNIT_FLAG_FRAME_START;
+         flags |= GST_VAAPI_DECODER_UNIT_FLAG_SLICE;
+         break;
+@@ -1313,11 +1398,20 @@ gst_vaapi_decoder_vc1_start_frame(GstVaapiDecoder *base_decoder,
+         return status;
+     }
+ 
+-    picture = GST_VAAPI_PICTURE_NEW(VC1, decoder);
+-    if (!picture) {
+-        GST_ERROR("failed to allocate picture");
+-        return GST_VAAPI_DECODER_STATUS_ERROR_ALLOCATION_FAILED;
+-    }
++    if (priv->current_picture) {
++        /* Re-use current picture where the first field was decoded */
++        picture = gst_vaapi_picture_new_field(priv->current_picture);
++        if (!picture) {
++            GST_ERROR("failed to allocate field picture");
++            return GST_VAAPI_DECODER_STATUS_ERROR_ALLOCATION_FAILED;
++        }
++    } else {
++        picture = GST_VAAPI_PICTURE_NEW(VC1, decoder);
++        if (!picture) {
++            GST_ERROR("failed to allocate picture");
++            return GST_VAAPI_DECODER_STATUS_ERROR_ALLOCATION_FAILED;
++        }
++     }
+     gst_vaapi_picture_replace(&priv->current_picture, picture);
+     gst_vaapi_picture_unref(picture);
+ 

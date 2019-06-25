@@ -1,0 +1,134 @@
+commit 6c5ec3ce41208ad46e973db515f05344e9c0eae4
+Author: Hang, Jie <jiex.hang@intel.com>
+Date:   Thu Feb 26 23:13:27 2015 +0800
+
+    [vaapi] Upload VAXV Add Rendermode patch for vaapi 0.5.10
+
+    Update VAXV patch for 0.5.10, filling g_properties[] instead of g_object_class_install_property to resolve a GLib warning.
+
+diff --git a/gst/vaapi/gstvaapisink.c b/gst/vaapi/gstvaapisink.c
+index dbd8388..fa0d741 100644
+--- a/gst/vaapi/gstvaapisink.c
++++ b/gst/vaapi/gstvaapisink.c
+@@ -134,6 +134,7 @@ enum
+   PROP_ROTATION,
+   PROP_FORCE_ASPECT_RATIO,
+   PROP_VIEW_ID,
++  PROP_RENDER_MODE,
+   PROP_HUE,
+   PROP_SATURATION,
+   PROP_BRIGHTNESS,
+@@ -144,6 +145,7 @@ enum
+ 
+ #define DEFAULT_DISPLAY_TYPE            GST_VAAPI_DISPLAY_TYPE_ANY
+ #define DEFAULT_ROTATION                GST_VAAPI_ROTATION_0
++#define DEFAULT_RENDER_MODE             GST_VAAPI_RENDER_MODE_TEXTURE
+ 
+ static GParamSpec *g_properties[N_PROPERTIES] = { NULL, };
+ 
+@@ -1205,6 +1207,33 @@ gst_vaapisink_display_changed (GstVaapiPluginBase * plugin)
+ }
+ 
+ static gboolean
++gst_vaapisink_ensure_render_mode(GstVaapiSink *sink)
++{
++    GstVaapiDisplay * const display = GST_VAAPI_PLUGIN_BASE_DISPLAY(sink);
++    gboolean success = FALSE;
++
++    g_return_val_if_fail(display, FALSE);
++
++    // Use render_mode_req here, instead of check render_mode with use_overlay.
++    // in case there is more render mode define in the future
++    if (sink->render_mode == sink->render_mode_req)
++        return TRUE;
++
++    gst_vaapi_display_lock(display);
++    success = gst_vaapi_display_set_render_mode(display, sink->render_mode_req);
++    gst_vaapi_display_unlock(display);
++    if (!success) {
++        GST_ERROR("failed to change VA display render mode");
++        goto end;
++    }
++    success = TRUE;
++
++end:
++    sink->render_mode = sink->render_mode_req;
++    return success;
++}
++
++static gboolean
+ gst_vaapisink_start (GstBaseSink * base_sink)
+ {
+   GstVaapiSink *const sink = GST_VAAPISINK_CAST (base_sink);
+@@ -1316,7 +1345,9 @@ gst_vaapisink_set_caps (GstBaseSink * base_sink, GstCaps * caps)
+   gst_caps_replace (&sink->caps, caps);
+ 
+   gst_vaapisink_ensure_colorbalance (sink);
++  // TODO, we'd better do it in _set_property to avoid check it each time.
+   gst_vaapisink_ensure_rotation (sink, FALSE);
++  gst_vaapisink_ensure_render_mode(sink);
+ 
+   gst_vaapisink_ensure_window_size (sink, &win_width, &win_height);
+   if (sink->window) {
+@@ -1397,6 +1428,7 @@ gst_vaapisink_show_frame_unlocked (GstVaapiSink * sink, GstBuffer * src_buffer)
+ 
+   gst_vaapisink_ensure_colorbalance (sink);
+   gst_vaapisink_ensure_rotation (sink, TRUE);
++  gst_vaapisink_ensure_render_mode(sink);
+ 
+   GST_DEBUG ("render surface %" GST_VAAPI_ID_FORMAT,
+       GST_VAAPI_ID_ARGS (gst_vaapi_surface_get_id (surface)));
+@@ -1534,6 +1566,9 @@ gst_vaapisink_set_property (GObject * object,
+     case PROP_FORCE_ASPECT_RATIO:
+       sink->keep_aspect = g_value_get_boolean (value);
+       break;
++    case PROP_RENDER_MODE:
++        sink->render_mode_req = g_value_get_enum(value);
++        break;
+     case PROP_HUE:
+     case PROP_SATURATION:
+     case PROP_BRIGHTNESS:
+@@ -1662,6 +1697,21 @@ gst_vaapisink_class_init (GstVaapiSinkClass * klass)
+       "display name to use", NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+ 
+   /**
++   * GstVaapiSink:render-mode:
++   *
++   * The VA display render mode, expressed as a #GstVaapiRenderMode.
++   */
++  g_properties[PROP_RENDER_MODE] =
++       g_param_spec_enum(GST_VAAPI_DISPLAY_PROP_RENDER_MODE,
++                         "render-mode",
++                         "The display render mode (overlay or texture-blit)",
++                         GST_VAAPI_TYPE_RENDER_MODE,
++                         DEFAULT_RENDER_MODE,
++                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++
++
++
++  /**
+    * GstVaapiSink:fullscreen:
+    *
+    * Selects whether fullscreen mode is enabled or not.
+@@ -1775,6 +1825,8 @@ gst_vaapisink_init (GstVaapiSink * sink)
+   sink->handle_events = TRUE;
+   sink->rotation = DEFAULT_ROTATION;
+   sink->rotation_req = DEFAULT_ROTATION;
++  sink->render_mode    = DEFAULT_RENDER_MODE;
++  sink->render_mode_req= DEFAULT_RENDER_MODE;
+   sink->keep_aspect = TRUE;
+   gst_video_info_init (&sink->video_info);
+ 
+diff --git a/gst/vaapi/gstvaapisink.h b/gst/vaapi/gstvaapisink.h
+index 958d6cc..3304ada 100644
+--- a/gst/vaapi/gstvaapisink.h
++++ b/gst/vaapi/gstvaapisink.h
+@@ -94,6 +94,8 @@ struct _GstVaapiSink
+   GstVaapiRectangle display_rect;
+   GstVaapiRotation rotation;
+   GstVaapiRotation rotation_req;
++  GstVaapiRenderMode  render_mode;
++  GstVaapiRenderMode  render_mode_req;
+   guint color_standard;
+   gint32 view_id;
+   GThread *event_thread;

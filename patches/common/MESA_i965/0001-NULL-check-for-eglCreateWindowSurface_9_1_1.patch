@@ -1,0 +1,30 @@
+From 797d23811b7292af905901c1298a24270e9084e9 Mon Sep 17 00:00:00 2001
+From: Sinclair Yeh <sinclair.yeh@intel.com>
+Date: Fri, 30 May 2014 16:21:35 -0700
+Subject: [PATCH] Add a check for NULL native_window
+
+---
+ src/egl/drivers/dri2/platform_wayland.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+index 99d8729..4462c16 100644
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -122,6 +122,13 @@ dri2_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
+ 
+    (void) drv;
+ 
++   if (NULL == window)
++   {
++      _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_create_surface");
++      return NULL;
++   }
++
++
+    dri2_surf = malloc(sizeof *dri2_surf);
+    if (!dri2_surf) {
+       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
+-- 
+1.9.1
+

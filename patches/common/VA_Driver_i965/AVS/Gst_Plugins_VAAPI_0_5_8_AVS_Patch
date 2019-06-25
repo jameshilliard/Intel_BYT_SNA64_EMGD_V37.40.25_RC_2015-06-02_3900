@@ -1,0 +1,28 @@
+From 25ff27ce2eecf915eaeda2658019dc2351e35030 Mon Sep 17 00:00:00 2001
+From: Guo DeshuiX <deshuix.guo@intel.com>
+Date: Thu, 27 Nov 2014 15:57:28 +0800
+Subject: [patch] Gst_Plugins_VAAPI_0_5_8_AVS_Patch
+
+Hack into Gst_Plugins_VAAPI force it use AVS do scale.
+Signed-off-by: Guo DeshuiX <deshuix.guo@intel.com>
+---
+ gst-libs/gst/vaapi/gstvaapifilter.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/gst-libs/gst/vaapi/gstvaapifilter.c b/gst-libs/gst/vaapi/gstvaapifilter.c
+index c201643..92e6942 100755
+--- a/gst-libs/gst/vaapi/gstvaapifilter.c
++++ b/gst-libs/gst/vaapi/gstvaapifilter.c
+@@ -1385,7 +1385,8 @@ gst_vaapi_filter_process_unlocked(GstVaapiFilter *filter,
+     pipeline_param->output_region = &dst_rect;
+     pipeline_param->output_color_standard = VAProcColorStandardNone;
+     pipeline_param->output_background_color = 0xff000000;
+-    pipeline_param->filter_flags = from_GstVaapiSurfaceRenderFlags(flags);
++    /* HQ scale flag */
++    pipeline_param->filter_flags = 528;
+     pipeline_param->filters = filters;
+     pipeline_param->num_filters = num_filters;
+ 
+-- 
+1.7.4.4
+

@@ -1,0 +1,70 @@
+diff --git a/gst-libs/gst/vaapi/gstvaapidebug.h b/gst-libs/gst/vaapi/gstvaapidebug.h
+index e386755..8c7db3c 100644
+--- a/gst-libs/gst/vaapi/gstvaapidebug.h
++++ b/gst-libs/gst/vaapi/gstvaapidebug.h
+@@ -30,4 +30,32 @@ GST_DEBUG_CATEGORY_EXTERN(gst_debug_vaapi);
+ #define GST_CAT_DEFAULT gst_debug_vaapi
+ #endif
+ 
++/* FPS Calculation for DEBUG */
++#define FPS_CALCULATION(objname)                     \
++    do{                                              \
++        static guint num_frame = 0;                  \
++        static struct timeval last_sys_time;         \
++        static struct timeval first_sys_time;        \
++        static int b_last_sys_time_init = FALSE;     \
++        if (!b_last_sys_time_init) {                 \
++          gettimeofday (&last_sys_time, NULL);       \
++          gettimeofday (&first_sys_time, NULL);      \
++          b_last_sys_time_init = TRUE;               \
++        } else {                                     \
++          if ((num_frame%50)==0) {                   \
++            double total, current;                   \
++            struct timeval cur_sys_time;             \
++            gettimeofday (&cur_sys_time, NULL);      \
++            total = (cur_sys_time.tv_sec - first_sys_time.tv_sec)*1.0f +       \
++                   (cur_sys_time.tv_usec - first_sys_time.tv_usec)/1000000.0f; \
++            current = (cur_sys_time.tv_sec - last_sys_time.tv_sec)*1.0f +      \
++                    (cur_sys_time.tv_usec - last_sys_time.tv_usec)/1000000.0f; \
++            printf("%s Current fps: %.2f, Total avg fps: %.2f\n",              \
++                    #objname, (float)50.0f/current, (float)num_frame/total);   \
++            last_sys_time = cur_sys_time;            \
++          }                                          \
++        }                                            \
++        ++num_frame;                                 \
++    }while(0)
++
+ #endif /* GST_VAAPI_DEBUG_H */
+diff --git a/gst-libs/gst/vaapi/gstvaapiencoder.c b/gst-libs/gst/vaapi/gstvaapiencoder.c
+index 430da1e..77db635 100644
+--- a/gst-libs/gst/vaapi/gstvaapiencoder.c
++++ b/gst-libs/gst/vaapi/gstvaapiencoder.c
+@@ -328,6 +328,7 @@ gst_vaapi_encoder_put_frame (GstVaapiEncoder * encoder,
+     /* Try again with any pending reordered frame now available for encoding */
+     frame = NULL;
+   }
++  FPS_CALCULATION(vaapiencode);
+   return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+ 
+   /* ERRORS */
+diff --git a/gst/vaapi/gstvaapisink.c b/gst/vaapi/gstvaapisink.c
+index dbd8388..1d4a3b1 100644
+--- a/gst/vaapi/gstvaapisink.c
++++ b/gst/vaapi/gstvaapisink.c
+@@ -37,6 +37,8 @@
+ 
+ #include <gst/vaapi/gstvaapivalue.h>
+ 
++#include <gst/vaapi/gstvaapidebug.h>
++
+ /* Supported interfaces */
+ #if GST_CHECK_VERSION(1,0,0)
+ # include <gst/video/videooverlay.h>
+@@ -1426,6 +1428,7 @@ gst_vaapisink_show_frame_unlocked (GstVaapiSink * sink, GstBuffer * src_buffer)
+   /* Retain VA surface until the next one is displayed */
+   gst_buffer_replace (&sink->video_buffer, buffer);
+   gst_buffer_unref (buffer);
++  FPS_CALCULATION(vaapisink);
+   return GST_FLOW_OK;
+ 
+ error:

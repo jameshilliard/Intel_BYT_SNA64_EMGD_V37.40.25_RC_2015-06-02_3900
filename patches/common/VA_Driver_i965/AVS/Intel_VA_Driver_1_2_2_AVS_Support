@@ -1,0 +1,1199 @@
+From 84af66df59a9829d44597eea094a954963a01feb Mon Sep 17 00:00:00 2001
+From: Guo DeshuiX <deshuix.guo@intel.com>
+Date: Thu, 27 Nov 2014 15:27:58 +0800
+Subject: [patch] Intel_VA_Driver_1_2_2_AVS_Patch
+
+Add AVS coefficients for HQ scale in intel-driver version 1.2.2
+
+Signed-off-by: Guo DeshuiX <deshuix.guo@intel.com>
+---
+ src/Makefile.am            |    2 +
+ src/gen75_vpp_vebox.c      |    7 +-
+ src/i965_output_dri.c      |   19 +--
+ src/i965_post_processing.c |  385 ++++++++++++++++++++++++++------------------
+ src/i965_post_processing.h |   24 ++-
+ src/i965_render.c          |   18 ++-
+ src/i965_vpp_avs.c         |  267 ++++++++++++++++++++++++++++++
+ src/i965_vpp_avs.h         |  109 +++++++++++++
+ 8 files changed, 640 insertions(+), 191 deletions(-)
+ create mode 100644 src/i965_vpp_avs.c
+ create mode 100644 src/i965_vpp_avs.h
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index edf8f4e..7d35c68 100755
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -73,6 +73,7 @@ source_c = \
+ 	i965_gpe_utils.c	\
+ 	i965_post_processing.c	\
+ 	i965_render.c		\
++	i965_vpp_avs.c		\
+ 	intel_batchbuffer.c	\
+ 	intel_batchbuffer_dump.c\
+ 	intel_driver.c		\
+@@ -107,6 +108,7 @@ source_h = \
+ 	i965_post_processing.h	\
+ 	i965_render.h           \
+ 	i965_structs.h		\
++	i965_vpp_avs.h		\
+ 	intel_batchbuffer.h     \
+ 	intel_batchbuffer_dump.h\
+ 	intel_compiler.h	\
+diff --git a/src/gen75_vpp_vebox.c b/src/gen75_vpp_vebox.c
+index b5a88b6..3070f39 100644
+--- a/src/gen75_vpp_vebox.c
++++ b/src/gen75_vpp_vebox.c
+@@ -99,10 +99,10 @@ VAStatus vpp_surface_convert(VADriverContextP ctx,
+ 
+ VAStatus vpp_surface_scaling(VADriverContextP ctx,
+                              struct object_surface *dst_obj_surf,
+-                             struct object_surface *src_obj_surf)
++                             struct object_surface *src_obj_surf,
++                             uint32_t flags)
+ {
+     VAStatus va_status = VA_STATUS_SUCCESS;
+-    int flags = I965_PP_FLAG_AVS;
+ 
+     assert(src_obj_surf->fourcc == VA_FOURCC('N','V','1','2'));
+     assert(dst_obj_surf->fourcc == VA_FOURCC('N','V','1','2'));
+@@ -1130,11 +1130,12 @@ int hsw_veb_post_format_convert(VADriverContextP ctx,
+         vpp_surface_convert(ctx,proc_ctx->surface_output_object, obj_surface);
+ 
+     } else if(proc_ctx->format_convert_flags & POST_SCALING_CONVERT) {
++        VAProcPipelineParameterBuffer * const pipe = proc_ctx->pipeline_param;
+        /* scaling, convert and copy NV12 to YV12/IMC3/IMC2/RGBA output*/
+         assert(obj_surface->fourcc == VA_FOURCC('N','V','1','2'));
+      
+         /* first step :surface scaling */
+-        vpp_surface_scaling(ctx,proc_ctx->surface_output_scaled_object, obj_surface);
++        vpp_surface_scaling(ctx,proc_ctx->surface_output_scaled_object, obj_surface, pipe->filter_flags);
+ 
+         /* second step: color format convert and copy to output */
+         obj_surface = proc_ctx->surface_output_object;
+diff --git a/src/i965_output_dri.c b/src/i965_output_dri.c
+index 1467367..6306698 100644
+--- a/src/i965_output_dri.c
++++ b/src/i965_output_dri.c
+@@ -123,11 +123,9 @@ i965_put_surface_dri(
+     union dri_buffer *buffer;
+     struct intel_region *dest_region;
+     struct object_surface *obj_surface; 
+-    unsigned int pp_flag = 0;
+     bool new_region = false;
+     uint32_t name;
+     int i, ret;
+-    unsigned int color_flag = 0;
+ 
+     /* Currently don't support DRI1 */
+     if (!VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_DRI2))
+@@ -180,21 +178,10 @@ i965_put_surface_dri(
+         assert(ret == 0);
+     }
+ 
+-    color_flag = flags & VA_SRC_COLOR_MASK;
+-    if (color_flag == 0)
+-        color_flag = VA_SRC_BT601;
++    if (!(flags & VA_SRC_COLOR_MASK))
++        flags |= VA_SRC_BT601;
+ 
+-    pp_flag = color_flag;
+-
+-    if ((flags & VA_FILTER_SCALING_MASK) == VA_FILTER_SCALING_NL_ANAMORPHIC)
+-        pp_flag |= I965_PP_FLAG_AVS;
+-
+-    if (flags & VA_TOP_FIELD)
+-        pp_flag |= I965_PP_FLAG_TOP_FIELD;
+-    else if (flags & VA_BOTTOM_FIELD)
+-        pp_flag |= I965_PP_FLAG_BOTTOM_FIELD;
+-
+-    intel_render_put_surface(ctx, obj_surface, src_rect, dst_rect, pp_flag);
++    intel_render_put_surface(ctx, obj_surface, src_rect, dst_rect, flags);
+ 
+     for (i = 0; i < I965_MAX_SUBPIC_SUM; i++) {
+         if (obj_surface->obj_subpic[i] != NULL) {
+diff --git a/src/i965_post_processing.c b/src/i965_post_processing.c
+index 015e11c..79341d8 100755
+--- a/src/i965_post_processing.c
++++ b/src/i965_post_processing.c
+@@ -144,12 +144,12 @@ static VAStatus pp_null_initialize(VADriverContextP ctx, struct i965_post_proces
+                                    struct i965_surface *dst_surface,
+                                    const VARectangle *dst_rect,
+                                    void *filter_param);
+-static VAStatus pp_nv12_avs_initialize_nlas(VADriverContextP ctx, struct i965_post_processing_context *pp_context,
+-                                            const struct i965_surface *src_surface,
+-                                            const VARectangle *src_rect,
+-                                            struct i965_surface *dst_surface,
+-                                            const VARectangle *dst_rect,
+-                                            void *filter_param);
++static VAStatus
++pp_nv12_avs_initialize(VADriverContextP ctx,
++    struct i965_post_processing_context *pp_context,
++    const struct i965_surface *src_surface, const VARectangle *src_rect,
++    struct i965_surface *dst_surface, const VARectangle *dst_rect,
++    void *filter_param);
+ static VAStatus pp_nv12_scaling_initialize(VADriverContextP ctx, struct i965_post_processing_context *pp_context,
+                                            const struct i965_surface *src_surface,
+                                            const VARectangle *src_rect,
+@@ -263,7 +263,7 @@ static struct pp_module pp_modules_gen5[] = {
+             NULL,
+         },
+ 
+-        pp_nv12_avs_initialize_nlas,
++        pp_nv12_avs_initialize,
+     },
+ 
+     {
+@@ -521,7 +521,7 @@ static struct pp_module pp_modules_gen6[] = {
+             NULL,
+         },
+ 
+-        pp_nv12_avs_initialize_nlas,
++        pp_nv12_avs_initialize,
+     },
+ 
+     {
+@@ -2383,14 +2383,59 @@ pp_avs_set_block_parameter(struct i965_post_processing_context *pp_context, int
+     return 0;
+ }
+ 
++static const AVSConfig gen5_avs_config = {
++    .coeff_frac_bits = 6,
++    .coeff_epsilon = 1.0f / (1U << 6),
++    .num_phases = 16,
++    .num_luma_coeffs = 8,
++    .num_chroma_coeffs = 4,
++
++    .coeff_range = {
++        .lower_bound = {
++            .y_k_h = { -0.25f, -0.5f, -1, 0, 0, -1, -0.5f, -0.25f },
++            .y_k_v = { -0.25f, -0.5f, -1, 0, 0, -1, -0.5f, -0.25f },
++            .uv_k_h = { -1, 0, 0, -1 },
++            .uv_k_v = { -1, 0, 0, -1 },
++        },
++        .upper_bound = {
++            .y_k_h = { 0.25f, 0.5f, 1, 2, 2, 1, 0.5f, 0.25f },
++            .y_k_v = { 0.25f, 0.5f, 1, 2, 2, 1, 0.5f, 0.25f },
++            .uv_k_h = { 1, 2, 2, 1 },
++            .uv_k_v = { 1, 2, 2, 1 },
++        },
++    },
++};
++
++static const AVSConfig gen6_avs_config = {
++    .coeff_frac_bits = 6,
++    .coeff_epsilon = 1.0f / (1U << 6),
++    .num_phases = 16,
++    .num_luma_coeffs = 8,
++    .num_chroma_coeffs = 4,
++
++    .coeff_range = {
++        .lower_bound = {
++            .y_k_h = { -0.25f, -0.5f, -1, -2, -2, -1, -0.5f, -0.25f },
++            .y_k_v = { -0.25f, -0.5f, -1, -2, -2, -1, -0.5f, -0.25f },
++            .uv_k_h = { -1, 0, 0, -1 },
++            .uv_k_v = { -1, 0, 0, -1 },
++        },
++        .upper_bound = {
++            .y_k_h = { 0.25f, 0.5f, 1, 2, 2, 1, 0.5f, 0.25f },
++            .y_k_v = { 0.25f, 0.5f, 1, 2, 2, 1, 0.5f, 0.25f },
++            .uv_k_h = { 1, 2, 2, 1 },
++            .uv_k_v = { 1, 2, 2, 1 },
++        },
++    },
++};
++
+ static VAStatus
+ pp_nv12_avs_initialize(VADriverContextP ctx, struct i965_post_processing_context *pp_context,
+                        const struct i965_surface *src_surface,
+                        const VARectangle *src_rect,
+                        struct i965_surface *dst_surface,
+                        const VARectangle *dst_rect,
+-                       void *filter_param,
+-                       int nlas)
++                       void *filter_param)
+ {
+     struct pp_avs_context *pp_avs_context = (struct pp_avs_context *)&pp_context->pp_avs_context;
+     struct pp_inline_parameter *pp_inline_parameter = pp_context->pp_inline_parameter;
+@@ -2402,6 +2447,11 @@ pp_nv12_avs_initialize(VADriverContextP ctx, struct i965_post_processing_context
+     int in_w, in_h, in_wpitch, in_hpitch;
+     int out_w, out_h, out_wpitch, out_hpitch;
+     int i;
++    AVSState * const avs = &pp_avs_context->state;
++    float sx, sy;
++
++    const int nlas = (pp_context->filter_flags & VA_FILTER_SCALING_MASK) ==
++        VA_FILTER_SCALING_NL_ANAMORPHIC;
+ 
+     /* surface */
+     obj_surface = (struct object_surface *)src_surface->base;
+@@ -2453,45 +2503,72 @@ pp_nv12_avs_initialize(VADriverContextP ctx, struct i965_post_processing_context
+     sampler_8x8_state = pp_context->sampler_state_table.bo_8x8->virtual;
+     memset(sampler_8x8_state, 0, sizeof(*sampler_8x8_state));
+ 
+-    for (i = 0; i < 17; i++) {
+-        /* for Y channel, currently ignore */
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c0 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c1 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c2 = 0x08;
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c3 = 0x18;
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c4 = 0x18;
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c5 = 0x08;
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c6 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c7 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c0 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c1 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c2 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c3 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c4 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c5 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c6 = 0x00;
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c7 = 0x00;
+-        /* for U/V channel, 0.25 */
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c0 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c1 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c2 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c3 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c4 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c5 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c6 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c7 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c0 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c1 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c2 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c3 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c4 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c5 = 0x10;
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c6 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c7 = 0x0;
++    sx = (float)dst_rect->width / src_rect->width;
++    sy = (float)dst_rect->height / src_rect->height;
++    avs_update_coefficients(avs, sx, sy, pp_context->filter_flags);
++
++    assert(avs->config->num_phases == 16);
++    for (i = 0; i <= 16; i++) {
++        const AVSCoeffs * const coeffs = &avs->coeffs[i];
++
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c0 =
++            intel_format_convert(coeffs->y_k_h[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c1 =
++            intel_format_convert(coeffs->y_k_h[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c2 =
++            intel_format_convert(coeffs->y_k_h[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c3 =
++            intel_format_convert(coeffs->y_k_h[3], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c4 =
++            intel_format_convert(coeffs->y_k_h[4], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c5 =
++            intel_format_convert(coeffs->y_k_h[5], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c6 =
++            intel_format_convert(coeffs->y_k_h[6], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c7 =
++            intel_format_convert(coeffs->y_k_h[7], 1, 6, 1);
++
++        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c2 =
++            intel_format_convert(coeffs->uv_k_h[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c3 =
++            intel_format_convert(coeffs->uv_k_h[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c4 =
++            intel_format_convert(coeffs->uv_k_h[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c5 =
++            intel_format_convert(coeffs->uv_k_h[3], 1, 6, 1);
++
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c0 =
++            intel_format_convert(coeffs->y_k_v[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c1 =
++            intel_format_convert(coeffs->y_k_v[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c2 =
++            intel_format_convert(coeffs->y_k_v[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c3 =
++            intel_format_convert(coeffs->y_k_v[3], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c4 =
++            intel_format_convert(coeffs->y_k_v[4], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c5 =
++            intel_format_convert(coeffs->y_k_v[5], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c6 =
++            intel_format_convert(coeffs->y_k_v[6], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c7 =
++            intel_format_convert(coeffs->y_k_v[7], 1, 6, 1);
++
++        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c2 =
++            intel_format_convert(coeffs->uv_k_v[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c3 =
++            intel_format_convert(coeffs->uv_k_v[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c4 =
++            intel_format_convert(coeffs->uv_k_v[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c5 =
++            intel_format_convert(coeffs->uv_k_v[3], 1, 6, 1);
+     }
+ 
+-    sampler_8x8_state->dw136.default_sharpness_level = 0;
+-    sampler_8x8_state->dw137.adaptive_filter_for_all_channel = 1;
++    /* Adaptive filter for all channels (DW4.15) */
++    sampler_8x8_state->coefficients[0].dw4.table_1x_filter_c1 = 1U << 7;
++
++    sampler_8x8_state->dw136.default_sharpness_level =
++        -avs_is_needed(pp_context->filter_flags);
+     sampler_8x8_state->dw137.bypass_y_adaptive_filtering = 1;
+     sampler_8x8_state->dw137.bypass_x_adaptive_filtering = 1;
+     dri_bo_unmap(pp_context->sampler_state_table.bo_8x8);
+@@ -2663,23 +2740,6 @@ pp_nv12_avs_initialize(VADriverContextP ctx, struct i965_post_processing_context
+ }
+ 
+ static VAStatus
+-pp_nv12_avs_initialize_nlas(VADriverContextP ctx, struct i965_post_processing_context *pp_context,
+-                            const struct i965_surface *src_surface,
+-                            const VARectangle *src_rect,
+-                            struct i965_surface *dst_surface,
+-                            const VARectangle *dst_rect,
+-                            void *filter_param)
+-{
+-    return pp_nv12_avs_initialize(ctx, pp_context,
+-                                  src_surface,
+-                                  src_rect,
+-                                  dst_surface,
+-                                  dst_rect,
+-                                  filter_param,
+-                                  1);
+-}
+-
+-static VAStatus
+ gen6_nv12_scaling_initialize(VADriverContextP ctx, struct i965_post_processing_context *pp_context,
+                              const struct i965_surface *src_surface,
+                              const VARectangle *src_rect,
+@@ -2692,8 +2752,7 @@ gen6_nv12_scaling_initialize(VADriverContextP ctx, struct i965_post_processing_c
+                                   src_rect,
+                                   dst_surface,
+                                   dst_rect,
+-                                  filter_param,
+-                                  0);    
++                                  filter_param);
+ }
+ 
+ static int
+@@ -2760,6 +2819,8 @@ gen7_pp_plx_avs_initialize(VADriverContextP ctx, struct i965_post_processing_con
+     int index, i;
+     int width[3], height[3], pitch[3], offset[3];
+     int src_width, src_height;
++    AVSState * const avs = &pp_avs_context->state;
++    float sx, sy;
+ 
+     /* source surface */
+     gen7_pp_set_media_rw_message_surface(ctx, pp_context, src_surface, 0, 0,
+@@ -2778,48 +2839,70 @@ gen7_pp_plx_avs_initialize(VADriverContextP ctx, struct i965_post_processing_con
+     sampler_8x8_state = pp_context->sampler_state_table.bo_8x8->virtual;
+     memset(sampler_8x8_state, 0, sizeof(*sampler_8x8_state));
+ 
+-    for (i = 0; i < 17; i++) {
+-	float coff;
+-	coff = i;
+-	coff = coff / 16;
+-        /* for Y channel, currently ignore */
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c0 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c1 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c2 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c3 = intel_format_convert(1 - coff, 1, 6,0);
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c4 = intel_format_convert(coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c5 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c6 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c7 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c0 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c1 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c2 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c3 = intel_format_convert(1 - coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c4 = intel_format_convert(coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c5 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c6 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c7 = 0x0;
+-        /* for U/V channel, 0.25 */
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c0 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c1 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c2 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c3 = intel_format_convert(1 - coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c4 = intel_format_convert(coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c5 = 0;
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c6 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c7 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c0 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c1 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c2 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c3 = intel_format_convert(1 - coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c4 = intel_format_convert(coff, 1, 6, 0);
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c5 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c6 = 0x0;
+-        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c7 = 0x0;
++    sx = (float)dst_rect->width / src_rect->width;
++    sy = (float)dst_rect->height / src_rect->height;
++    avs_update_coefficients(avs, sx, sy, pp_context->filter_flags);
++
++    assert(avs->config->num_phases == 16);
++    for (i = 0; i <= 16; i++) {
++        const AVSCoeffs * const coeffs = &avs->coeffs[i];
++
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c0 =
++            intel_format_convert(coeffs->y_k_h[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c1 =
++            intel_format_convert(coeffs->y_k_h[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c2 =
++            intel_format_convert(coeffs->y_k_h[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw0.table_0x_filter_c3 =
++            intel_format_convert(coeffs->y_k_h[3], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c4 =
++            intel_format_convert(coeffs->y_k_h[4], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c5 =
++            intel_format_convert(coeffs->y_k_h[5], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c6 =
++            intel_format_convert(coeffs->y_k_h[6], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw1.table_0x_filter_c7 =
++            intel_format_convert(coeffs->y_k_h[7], 1, 6, 1);
++
++        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c2 =
++            intel_format_convert(coeffs->uv_k_h[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw4.table_1x_filter_c3 =
++            intel_format_convert(coeffs->uv_k_h[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c4 =
++            intel_format_convert(coeffs->uv_k_h[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw5.table_1x_filter_c5 =
++            intel_format_convert(coeffs->uv_k_h[3], 1, 6, 1);
++
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c0 =
++            intel_format_convert(coeffs->y_k_v[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c1 =
++            intel_format_convert(coeffs->y_k_v[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c2 =
++            intel_format_convert(coeffs->y_k_v[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw2.table_0y_filter_c3 =
++            intel_format_convert(coeffs->y_k_v[3], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c4 =
++            intel_format_convert(coeffs->y_k_v[4], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c5 =
++            intel_format_convert(coeffs->y_k_v[5], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c6 =
++            intel_format_convert(coeffs->y_k_v[6], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw3.table_0y_filter_c7 =
++            intel_format_convert(coeffs->y_k_v[7], 1, 6, 1);
++
++        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c2 =
++            intel_format_convert(coeffs->uv_k_v[0], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw6.table_1y_filter_c3 =
++            intel_format_convert(coeffs->uv_k_v[1], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c4 =
++            intel_format_convert(coeffs->uv_k_v[2], 1, 6, 1);
++        sampler_8x8_state->coefficients[i].dw7.table_1y_filter_c5 =
++            intel_format_convert(coeffs->uv_k_v[3], 1, 6, 1);
+     }
+ 
+-    sampler_8x8_state->dw136.default_sharpness_level = 0;
+-    sampler_8x8_state->dw137.adaptive_filter_for_all_channel = 1;
++    sampler_8x8_state->dw136.default_sharpness_level =
++        -avs_is_needed(pp_context->filter_flags);
++    sampler_8x8_state->coefficients[0].dw4.table_1x_filter_c1 = 1U << 7;
+     sampler_8x8_state->dw137.bypass_y_adaptive_filtering = 1;
+     sampler_8x8_state->dw137.bypass_x_adaptive_filtering = 1;
+     dri_bo_unmap(pp_context->sampler_state_table.bo_8x8);
+@@ -4802,7 +4885,7 @@ i965_scaling_processing(
+     const VARectangle *src_rect,
+     struct object_surface *dst_surface_obj,
+     const VARectangle *dst_rect,
+-    unsigned int       flags)
++    unsigned int       va_flags)
+ {
+     VAStatus va_status = VA_STATUS_SUCCESS;
+     struct i965_driver_data *i965 = i965_driver_data(ctx);
+@@ -4810,9 +4893,11 @@ i965_scaling_processing(
+     assert(src_surface_obj->fourcc == VA_FOURCC('N', 'V', '1', '2'));
+     assert(dst_surface_obj->fourcc == VA_FOURCC('N', 'V', '1', '2'));
+ 
+-    if (HAS_PP(i965) && (flags & I965_PP_FLAG_AVS)) {
++    if (HAS_PP(i965)) {
+         struct i965_surface src_surface;
+         struct i965_surface dst_surface;
++        struct i965_post_processing_context *pp_context;
++        unsigned int filter_flags;
+ 
+          _i965LockMutex(&i965->pp_mutex);
+ 
+@@ -4823,13 +4908,15 @@ i965_scaling_processing(
+          dst_surface.type = I965_SURFACE_TYPE_SURFACE;
+          dst_surface.flags = I965_SURFACE_FLAG_FRAME;
+ 
+-         va_status = i965_post_processing_internal(ctx, i965->pp_context,
+-                                                   &src_surface,
+-                                                   src_rect,
+-                                                   &dst_surface,
+-                                                   dst_rect,
+-                                                   PP_NV12_AVS,
+-                                                   NULL);
++         pp_context = i965->pp_context;
++         filter_flags = pp_context->filter_flags;
++         pp_context->filter_flags = va_flags;
++
++         va_status = i965_post_processing_internal(ctx, pp_context,
++             &src_surface, src_rect, &dst_surface, dst_rect,
++             avs_is_needed(va_flags) ? PP_NV12_AVS : PP_NV12_SCALING, NULL);
++
++         pp_context->filter_flags = filter_flags;
+ 
+          _i965UnlockMutex(&i965->pp_mutex);
+     }
+@@ -4843,8 +4930,9 @@ i965_post_processing(
+     struct object_surface *obj_surface,
+     const VARectangle *src_rect,
+     const VARectangle *dst_rect,
+-    unsigned int       flags,
+-    int               *has_done_scaling  
++    unsigned int       va_flags,
++    int               *has_done_scaling,
++    VARectangle *calibrated_rect
+ )
+ {
+     struct i965_driver_data *i965 = i965_driver_data(ctx);
+@@ -4857,6 +4945,7 @@ i965_post_processing(
+         VAStatus status;
+         struct i965_surface src_surface;
+         struct i965_surface dst_surface;
++        struct i965_post_processing_context *pp_context;
+ 
+         /* Currently only support post processing for NV12 surface */
+         if (obj_surface->fourcc != VA_FOURCC('N', 'V', '1', '2'))
+@@ -4864,51 +4953,27 @@ i965_post_processing(
+ 
+         _i965LockMutex(&i965->pp_mutex);
+ 
+-        if (flags & I965_PP_FLAG_MCDI) {
+-            src_surface.base = (struct object_base *)obj_surface;
+-            src_surface.type = I965_SURFACE_TYPE_SURFACE;
+-            src_surface.flags = (flags & I965_PP_FLAG_TOP_FIELD) ? 
+-                I965_SURFACE_FLAG_TOP_FIELD_FIRST : I965_SURFACE_FLAG_BOTTOME_FIELD_FIRST;
+-
+-            status = i965_CreateSurfaces(ctx,
+-                                         obj_surface->orig_width,
+-                                         obj_surface->orig_height,
+-                                         VA_RT_FORMAT_YUV420,
+-                                         1,
+-                                         &out_surface_id);
+-            assert(status == VA_STATUS_SUCCESS);
+-            obj_surface = SURFACE(out_surface_id);
+-            assert(obj_surface);
+-            i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
+-            i965_vpp_clear_surface(ctx, i965->pp_context, obj_surface, 0); 
+-
+-            dst_surface.base = (struct object_base *)obj_surface;
+-            dst_surface.type = I965_SURFACE_TYPE_SURFACE;
+-            dst_surface.flags = I965_SURFACE_FLAG_FRAME;
+-
+-            i965_post_processing_internal(ctx, i965->pp_context,
+-                                          &src_surface,
+-                                          src_rect,
+-                                          &dst_surface,
+-                                          dst_rect,
+-                                          PP_NV12_DNDI,
+-                                          NULL);
+-        }
+-
+-        if (flags & I965_PP_FLAG_AVS) {
++        pp_context = i965->pp_context;
++        pp_context->filter_flags = va_flags;
++        if (avs_is_needed(va_flags)) {
++            VARectangle tmp_dst_rect;
+             struct i965_render_state *render_state = &i965->render_state;
+             struct intel_region *dest_region = render_state->draw_region;
+ 
+             if (out_surface_id != VA_INVALID_ID)
+                 tmp_id = out_surface_id;
+ 
++            tmp_dst_rect.x = 0;
++            tmp_dst_rect.y = 0;
++            tmp_dst_rect.width = dst_rect->width;
++            tmp_dst_rect.height = dst_rect->height;
+             src_surface.base = (struct object_base *)obj_surface;
+             src_surface.type = I965_SURFACE_TYPE_SURFACE;
+             src_surface.flags = I965_SURFACE_FLAG_FRAME;
+ 
+             status = i965_CreateSurfaces(ctx,
+-                                         dest_region->width,
+-                                         dest_region->height,
++                                         dst_rect->width,
++                                         dst_rect->height,
+                                          VA_RT_FORMAT_YUV420,
+                                          1,
+                                          &out_surface_id);
+@@ -4916,17 +4981,17 @@ i965_post_processing(
+             obj_surface = SURFACE(out_surface_id);
+             assert(obj_surface);
+             i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
+-            i965_vpp_clear_surface(ctx, i965->pp_context, obj_surface, 0); 
++            i965_vpp_clear_surface(ctx, pp_context, obj_surface, 0);
+ 
+             dst_surface.base = (struct object_base *)obj_surface;
+             dst_surface.type = I965_SURFACE_TYPE_SURFACE;
+             dst_surface.flags = I965_SURFACE_FLAG_FRAME;
+ 
+-            i965_post_processing_internal(ctx, i965->pp_context,
++            i965_post_processing_internal(ctx, pp_context,
+                                           &src_surface,
+                                           src_rect,
+                                           &dst_surface,
+-                                          dst_rect,
++                                          &tmp_dst_rect,
+                                           PP_NV12_AVS,
+                                           NULL);
+ 
+@@ -4934,6 +4999,10 @@ i965_post_processing(
+                 i965_DestroySurfaces(ctx, &tmp_id, 1);
+                 
+             *has_done_scaling = 1;
++            calibrated_rect->x = 0;
++            calibrated_rect->y = 0;
++            calibrated_rect->width = dst_rect->width;
++            calibrated_rect->height = dst_rect->height;
+         }
+ 
+         _i965UnlockMutex(&i965->pp_mutex);
+@@ -5369,6 +5438,7 @@ i965_post_processing_context_init(VADriverContextP ctx,
+ {
+     struct i965_driver_data *i965 = i965_driver_data(ctx);
+     int i;
++    const AVSConfig *avs_config;
+ 
+     pp_context->urb.size = URB_SIZE((&i965->intel));
+     pp_context->urb.num_vfe_entries = 32;
+@@ -5428,6 +5498,9 @@ i965_post_processing_context_init(VADriverContextP ctx,
+     pp_context->pp_dndi_context.current_out_obj_surface = NULL;
+     pp_context->pp_dndi_context.frame_order = -1;
+     pp_context->batch = batch;
++
++    avs_config = &gen6_avs_config;
++    avs_init_state(&pp_context->pp_avs_context.state, avs_config);
+ }
+ 
+ bool
+@@ -5677,13 +5750,13 @@ i965_proc_picture(VADriverContextP ctx,
+                                       NULL);
+     } else {
+ 
++        proc_context->pp_context.filter_flags = pipeline_param->filter_flags;
+         i965_post_processing_internal(ctx, &proc_context->pp_context,
+                                       &src_surface,
+                                       &src_rect,
+                                       &dst_surface,
+                                       &dst_rect,
+-                                      (pipeline_param->filter_flags & VA_FILTER_SCALING_MASK) == VA_FILTER_SCALING_NL_ANAMORPHIC ?
+-                                      PP_NV12_AVS : PP_NV12_SCALING,
++                                      avs_is_needed(pipeline_param->filter_flags) ? PP_NV12_AVS : PP_NV12_SCALING,
+                                       NULL);
+     }
+ 
+diff --git a/src/i965_post_processing.h b/src/i965_post_processing.h
+index 9b2d7c6..58d34dc 100755
+--- a/src/i965_post_processing.h
++++ b/src/i965_post_processing.h
+@@ -29,12 +29,9 @@
+ #ifndef __I965_POST_PROCESSING_H__
+ #define __I965_POST_PROCESSING_H__
+ 
+-#define MAX_PP_SURFACES                 48
++#include "i965_vpp_avs.h"
+ 
+-#define I965_PP_FLAG_TOP_FIELD          1
+-#define I965_PP_FLAG_BOTTOM_FIELD       2
+-#define I965_PP_FLAG_MCDI               4
+-#define I965_PP_FLAG_AVS                8
++#define MAX_PP_SURFACES                 48
+ 
+ enum
+ {
+@@ -79,6 +76,7 @@ struct pp_scaling_context
+ 
+ struct pp_avs_context
+ {
++    AVSState state;
+     int dest_x; /* in pixel */
+     int dest_y; /* in pixel */
+     int dest_w;
+@@ -484,6 +482,15 @@ struct i965_post_processing_context
+     struct pp_dn_context pp_dn_context;
+     void *private_context; /* pointer to the current private context */
+     void *pipeline_param;  /* pointer to the pipeline parameter */
++    /**
++     * \ref Extra filter flags used as a fast path.
++     *
++     * This corresponds to vaPutSurface() flags, for direct rendering,
++     * or to VAProcPipelineParameterBuffer.filter_flags when the VPP
++     * interfaces are used. In the latter case, this is just a copy of
++     * that field.
++     */
++    unsigned int filter_flags;
+ 
+     int (*pp_x_steps)(void *private_context);
+     int (*pp_y_steps)(void *private_context);
+@@ -508,8 +515,9 @@ i965_post_processing(
+     struct object_surface *obj_surface,
+     const VARectangle *src_rect,
+     const VARectangle *dst_rect,
+-    unsigned int       flags,
+-    int                *has_done_scaling 
++    unsigned int       va_flags,
++    int                *has_done_scaling,
++    VARectangle *calibrated_rect
+ );
+ 
+ VAStatus
+@@ -519,7 +527,7 @@ i965_scaling_processing(
+     const VARectangle *src_rect,
+     struct object_surface *dst_surface_obj,
+     const VARectangle *dst_rect,
+-    unsigned int       flags
++    unsigned int       va_flags
+ );
+ 
+ VAStatus
+diff --git a/src/i965_render.c b/src/i965_render.c
+index a902fcb..ccc9ba1 100644
+--- a/src/i965_render.c
++++ b/src/i965_render.c
+@@ -708,11 +708,11 @@ i965_render_set_surface_state(
+ 
+     memset(ss, 0, sizeof(*ss));
+ 
+-    switch (flags & (I965_PP_FLAG_TOP_FIELD|I965_PP_FLAG_BOTTOM_FIELD)) {
+-    case I965_PP_FLAG_BOTTOM_FIELD:
++    switch (flags & (VA_TOP_FIELD|VA_BOTTOM_FIELD)) {
++    case VA_BOTTOM_FIELD:
+         ss->ss0.vert_line_stride_ofs = 1;
+         /* fall-through */
+-    case I965_PP_FLAG_TOP_FIELD:
++    case VA_TOP_FIELD:
+         ss->ss0.vert_line_stride = 1;
+         height /= 2;
+         break;
+@@ -779,11 +779,11 @@ gen7_render_set_surface_state(
+ 
+     memset(ss, 0, sizeof(*ss));
+ 
+-    switch (flags & (I965_PP_FLAG_TOP_FIELD|I965_PP_FLAG_BOTTOM_FIELD)) {
+-    case I965_PP_FLAG_BOTTOM_FIELD:
++    switch (flags & (VA_TOP_FIELD|VA_BOTTOM_FIELD)) {
++    case VA_BOTTOM_FIELD:
+         ss->ss0.vert_line_stride_ofs = 1;
+         /* fall-through */
+-    case I965_PP_FLAG_TOP_FIELD:
++    case VA_TOP_FIELD:
+         ss->ss0.vert_line_stride = 1;
+         height /= 2;
+         break;
+@@ -3088,12 +3088,14 @@ intel_render_put_surface(
+ {
+     struct i965_driver_data *i965 = i965_driver_data(ctx);
+     int has_done_scaling = 0;
++    VARectangle calibrated_rect;
+     VASurfaceID out_surface_id = i965_post_processing(ctx,
+                                                       obj_surface,
+                                                       src_rect,
+                                                       dst_rect,
+                                                       flags,
+-                                                      &has_done_scaling);
++                                                      &has_done_scaling,
++                                                      &calibrated_rect);
+ 
+     assert((!has_done_scaling) || (out_surface_id != VA_INVALID_ID));
+ 
+@@ -3104,7 +3106,7 @@ intel_render_put_surface(
+             obj_surface = new_obj_surface;
+ 
+         if (has_done_scaling)
+-            src_rect = dst_rect;
++            src_rect = &calibrated_rect;
+     }
+ 
+     if (IS_GEN7(i965->intel.device_id))
+diff --git a/src/i965_vpp_avs.c b/src/i965_vpp_avs.c
+new file mode 100644
+index 0000000..f6fe906
+--- /dev/null
++++ b/src/i965_vpp_avs.c
+@@ -0,0 +1,267 @@
++/*
++ * i965_vpp_avs.c - Adaptive Video Scaler (AVS) block
++ *
++ * Copyright (C) 2014 Intel Corporation
++ *   Author: Gwenole Beauchesne <gwenole.beauchesne@intel.com>
++ *
++ * The source code contained or described herein and all documents related to
++ * the source code ("Material") are owned by Intel Corporation or its suppliers
++ * or licensors. Title to the Material remains with Intel Corporation or its
++ * suppliers and licensors. The Material contains trade secrets and proprietary
++ * and confidential information of Intel or its suppliers and licensors. The
++ * Material is protected by worldwide copyright and trade secret laws and
++ * treaty provisions. No part of the Material may be used, copied, reproduced,
++ * modified, published, uploaded, posted, transmitted, distributed, or
++ * disclosed in any way without Intel's prior express written permission.
++ *
++ * No license under any patent, copyright, trade secret or other intellectual
++ * property right is granted to or conferred upon you by disclosure or delivery
++ * of the Materials, either expressly, by implication, inducement, estoppel or
++ * otherwise. Any license under such intellectual property rights must be
++ * express and approved by Intel in writing.
++ */
++
++#include "sysdeps.h"
++#include <math.h>
++#include <va/va.h>
++#include "i965_vpp_avs.h"
++
++typedef void (*AVSGenCoeffsFunc)(float *coeffs, int num_coeffs, int phase,
++    int num_phases, float f);
++
++/* Initializes all coefficients to zero */
++static void
++avs_init_coeffs(float *coeffs, int num_coeffs)
++{
++#if defined(__STDC_IEC_559__) && (__STDC_IEC_559__ > 0)
++    memset(coeffs, 0, num_coeffs * sizeof(*coeffs));
++#else
++    int i;
++
++    for (i = 0; i < num_coeffs; i++)
++        coeffs[i] = 0.0f;
++#endif
++}
++
++/* Computes the sinc(x) function */
++static float
++avs_sinc(float x)
++{
++    if (x == 0.0f)
++        return 1.0f;
++    return sin(x * M_PI) / (x * M_PI);
++}
++
++/* Convolution kernel for linear interpolation */
++static float
++avs_kernel_linear(float x)
++{
++    const float abs_x = fabsf(x);
++
++    return abs_x < 1.0f ? 1 - abs_x : 0.0f;
++}
++
++/* Convolution kernel for Lanczos-based interpolation */
++static float
++avs_kernel_lanczos(float x, float a)
++{
++    const float abs_x = fabsf(x);
++
++    return abs_x < a ? avs_sinc(x) * avs_sinc(x / a) : 0.0f;
++}
++
++/* Truncates floating-point value towards an epsilon factor */
++static inline float
++avs_trunc_coeff(float x, float epsilon)
++{
++    return rintf(x / epsilon) * epsilon;
++}
++
++/* Normalize coefficients for one sample/direction */
++static void
++avs_normalize_coeffs_1(float *coeffs, int num_coeffs, float epsilon)
++{
++    float s, sum = 0.0;
++    int i, c, r, r1;
++
++    for (i = 0; i < num_coeffs; i++)
++        sum += coeffs[i];
++
++    if (sum < epsilon)
++        return;
++
++    s = 0.0;
++    for (i = 0; i < num_coeffs; i++)
++        s += (coeffs[i] = avs_trunc_coeff(coeffs[i] / sum, epsilon));
++
++    /* Distribute the remaining bits, while allocating more to the center */
++    c = num_coeffs/2;
++    c = c - (coeffs[c - 1] > coeffs[c]);
++
++    r = (1.0f - s) / epsilon;
++    r1 = r / 4;
++    if (coeffs[c + 1] == 0.0f)
++        coeffs[c] += r * epsilon;
++    else {
++        coeffs[c] += (r - 2*r1) * epsilon;
++        coeffs[c - 1] += r1 * epsilon;
++        coeffs[c + 1] += r1 * epsilon;
++    }
++}
++
++/* Normalize all coefficients so that their sum yields 1.0f */
++static void
++avs_normalize_coeffs(AVSCoeffs *coeffs, const AVSConfig *config)
++{
++    avs_normalize_coeffs_1(coeffs->y_k_h, config->num_luma_coeffs,
++        config->coeff_epsilon);
++    avs_normalize_coeffs_1(coeffs->y_k_v, config->num_luma_coeffs,
++        config->coeff_epsilon);
++    avs_normalize_coeffs_1(coeffs->uv_k_h, config->num_chroma_coeffs,
++        config->coeff_epsilon);
++    avs_normalize_coeffs_1(coeffs->uv_k_v, config->num_chroma_coeffs,
++        config->coeff_epsilon);
++}
++
++/* Validate coefficients for one sample/direction */
++static bool
++avs_validate_coeffs_1(float *coeffs, int num_coeffs, const float *min_coeffs,
++    const float *max_coeffs)
++{
++    int i;
++
++    for (i = 0; i < num_coeffs; i++) {
++        if (coeffs[i] < min_coeffs[i] || coeffs[i] > max_coeffs[i])
++            return false;
++    }
++    return true;
++}
++
++/* Validate coefficients wrt. the supplied range in config */
++static bool
++avs_validate_coeffs(AVSCoeffs *coeffs, const AVSConfig *config)
++{
++    const AVSCoeffs * const min_coeffs = &config->coeff_range.lower_bound;
++    const AVSCoeffs * const max_coeffs = &config->coeff_range.upper_bound;
++
++    return avs_validate_coeffs_1(coeffs->y_k_h, config->num_luma_coeffs,
++            min_coeffs->y_k_h, max_coeffs->y_k_h) &&
++        avs_validate_coeffs_1(coeffs->y_k_v, config->num_luma_coeffs,
++            min_coeffs->y_k_v, max_coeffs->y_k_v) &&
++        avs_validate_coeffs_1(coeffs->uv_k_h, config->num_chroma_coeffs,
++            min_coeffs->uv_k_h, max_coeffs->uv_k_h) &&
++        avs_validate_coeffs_1(coeffs->uv_k_v, config->num_chroma_coeffs,
++            min_coeffs->uv_k_v, max_coeffs->uv_k_v);
++}
++
++/* Generate coefficients for default quality (bilinear) */
++static void
++avs_gen_coeffs_linear(float *coeffs, int num_coeffs, int phase, int num_phases,
++    float f)
++{
++    const int c = num_coeffs/2 - 1;
++    const float p = (float)phase / (num_phases*2);
++
++    avs_init_coeffs(coeffs, num_coeffs);
++    coeffs[c] = avs_kernel_linear(p);
++    coeffs[c + 1] = avs_kernel_linear(p - 1);
++}
++
++/* Generate coefficients for high quality (lanczos) */
++static void
++avs_gen_coeffs_lanczos(float *coeffs, int num_coeffs, int phase, int num_phases,
++    float f)
++{
++    const int c = num_coeffs/2 - 1;
++    const int l = num_coeffs > 4 ? 3 : 2;
++    const float p = (float)phase / (num_phases*2);
++    int i;
++
++    if (f > 1.0f)
++        f = 1.0f;
++    for (i = 0; i < num_coeffs; i++)
++        coeffs[i] = avs_kernel_lanczos((i - (c + p)) * f, l);
++}
++
++/* Generate coefficients with the supplied scaler */
++static bool
++avs_gen_coeffs(AVSState *avs, float sx, float sy, AVSGenCoeffsFunc gen_coeffs)
++{
++    const AVSConfig * const config = avs->config;
++    int i;
++
++    for (i = 0; i <= config->num_phases; i++) {
++        AVSCoeffs * const coeffs = &avs->coeffs[i];
++
++        gen_coeffs(coeffs->y_k_h, config->num_luma_coeffs,
++            i, config->num_phases, sx);
++        gen_coeffs(coeffs->uv_k_h, config->num_chroma_coeffs,
++            i, config->num_phases, sx);
++        gen_coeffs(coeffs->y_k_v, config->num_luma_coeffs,
++            i, config->num_phases, sy);
++        gen_coeffs(coeffs->uv_k_v, config->num_chroma_coeffs,
++            i, config->num_phases, sy);
++
++        avs_normalize_coeffs(coeffs, config);
++        if (!avs_validate_coeffs(coeffs, config))
++            return false;
++    }
++    return true;
++}
++
++/* Initializes AVS state with the supplied configuration */
++void
++avs_init_state(AVSState *avs, const AVSConfig *config)
++{
++    avs->config = config;
++    avs->flags = 0;
++    avs->scale_x = 0.0f;
++    avs->scale_y = 0.0f;
++}
++
++/* Checks whether the AVS scaling parameters changed */
++static inline bool
++avs_params_changed(AVSState *avs, float sx, float sy, uint32_t flags)
++{
++    if (avs->flags != flags)
++        return true;
++
++    if (flags >= VA_FILTER_SCALING_HQ) {
++        if (avs->scale_x != sx || avs->scale_y != sy)
++            return true;
++    }
++    else {
++        if (avs->scale_x == 0.0f || avs->scale_y == 0.0f)
++            return true;
++    }
++    return false;
++}
++
++/* Updates AVS coefficients for the supplied factors and quality level */
++bool
++avs_update_coefficients(AVSState *avs, float sx, float sy, uint32_t flags)
++{
++    AVSGenCoeffsFunc gen_coeffs;
++
++    flags &= VA_FILTER_SCALING_MASK;
++    if (!avs_params_changed(avs, sx, sy, flags))
++        return true;
++
++    switch (flags) {
++    case VA_FILTER_SCALING_HQ:
++        gen_coeffs = avs_gen_coeffs_lanczos;
++        break;
++    default:
++        gen_coeffs = avs_gen_coeffs_linear;
++        break;
++    }
++    if (!avs_gen_coeffs(avs, sx, sy, gen_coeffs)) {
++        assert(0 && "invalid set of coefficients generated");
++        return false;
++    }
++
++    avs->flags = flags;
++    avs->scale_x = sx;
++    avs->scale_y = sy;
++    return true;
++}
+diff --git a/src/i965_vpp_avs.h b/src/i965_vpp_avs.h
+new file mode 100644
+index 0000000..0b01c8f
+--- /dev/null
++++ b/src/i965_vpp_avs.h
+@@ -0,0 +1,109 @@
++/*
++ * i965_vpp_avs.h - Adaptive Video Scaler (AVS) block
++ *
++ * Copyright (C) 2014 Intel Corporation
++ *   Author: Gwenole Beauchesne <gwenole.beauchesne@intel.com>
++ *
++ * The source code contained or described herein and all documents related to
++ * the source code ("Material") are owned by Intel Corporation or its suppliers
++ * or licensors. Title to the Material remains with Intel Corporation or its
++ * suppliers and licensors. The Material contains trade secrets and proprietary
++ * and confidential information of Intel or its suppliers and licensors. The
++ * Material is protected by worldwide copyright and trade secret laws and
++ * treaty provisions. No part of the Material may be used, copied, reproduced,
++ * modified, published, uploaded, posted, transmitted, distributed, or
++ * disclosed in any way without Intel's prior express written permission.
++ *
++ * No license under any patent, copyright, trade secret or other intellectual
++ * property right is granted to or conferred upon you by disclosure or delivery
++ * of the Materials, either expressly, by implication, inducement, estoppel or
++ * otherwise. Any license under such intellectual property rights must be
++ * express and approved by Intel in writing.
++ */
++
++#ifndef I965_VPP_AVS_H
++#define I965_VPP_AVS_H
++
++#include <stdint.h>
++#include <stdbool.h>
++
++/** Maximum number of phases for the sharp filter */
++#define AVS_MAX_PHASES 16
++
++/** Maximum number of coefficients for luma samples */
++#define AVS_MAX_LUMA_COEFFS 8
++
++/** Maximum number of coefficients for chroma samples */
++#define AVS_MAX_CHROMA_COEFFS 4
++
++typedef struct avs_coeffs               AVSCoeffs;
++typedef struct avs_coeffs_range         AVSCoeffsRange;
++typedef struct avs_config               AVSConfig;
++typedef struct avs_state                AVSState;
++
++/** AVS coefficients for one phase */
++struct avs_coeffs {
++    /** Coefficients for luma samples on the X-axis (horizontal) */
++    float y_k_h[AVS_MAX_LUMA_COEFFS];
++    /** Coefficients for luma samples on the Y-axis (vertical) */
++    float y_k_v[AVS_MAX_LUMA_COEFFS];
++    /** Coefficients for chroma samples on the X-axis (horizontal) */
++    float uv_k_h[AVS_MAX_CHROMA_COEFFS];
++    /** Coefficients for chroma samples on the Y-axis (vertical) */
++    float uv_k_v[AVS_MAX_CHROMA_COEFFS];
++};
++
++/** AVS coefficients range used for validation */
++struct avs_coeffs_range {
++    /** Lower bound for all coefficients */
++    AVSCoeffs lower_bound;
++    /** Upper bound for all coefficients */
++    AVSCoeffs upper_bound;
++};
++
++/** Static configuration (per-generation) */
++struct avs_config {
++    /** Number of bits used for the fractional part of a coefficient */
++    int coeff_frac_bits;
++    /** The smallest float that could be represented as a coefficient */
++    float coeff_epsilon;
++    /** Coefficients range */
++    AVSCoeffsRange coeff_range;
++    /** Number of phases for the sharp filter */
++    int num_phases;
++    /** Number of coefficients for luma samples */
++    int num_luma_coeffs;
++    /** Number of coefficients for chroma samples */
++    int num_chroma_coeffs;
++};
++
++/** AVS block state */
++struct avs_state {
++    /** Per-generation configuration parameters */
++    const AVSConfig *config;
++    /** Scaling flags */
++    uint32_t flags;
++    /** Scaling factor on the X-axis (horizontal) */
++    float scale_x;
++    /** Scaling factor on the Y-axis (vertical) */
++    float scale_y;
++    /** Coefficients for the polyphase scaler */
++    AVSCoeffs coeffs[AVS_MAX_PHASES + 1];
++};
++
++/** Initializes AVS state with the supplied configuration */
++void
++avs_init_state(AVSState *avs, const AVSConfig *config);
++
++/** Updates AVS coefficients for the supplied factors and quality level */
++bool
++avs_update_coefficients(AVSState *avs, float sx, float sy, uint32_t flags);
++
++/** Checks whether AVS is needed, e.g. if high-quality scaling is requested */
++static inline bool
++avs_is_needed(uint32_t flags)
++{
++    return ((flags & VA_FILTER_SCALING_MASK) >= VA_FILTER_SCALING_HQ);
++}
++
++#endif /* I965_VPP_AVS_H */
+-- 
+1.7.4.4
+

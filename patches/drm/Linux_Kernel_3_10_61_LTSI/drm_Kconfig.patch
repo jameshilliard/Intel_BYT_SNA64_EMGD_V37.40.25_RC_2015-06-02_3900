@@ -1,0 +1,43 @@
+--- linux-ltsi-3.10.61_org/drivers/gpu/drm/Kconfig	2015-01-07 09:44:51.000000000 +0800
++++ linux-ltsi-3.10.61/drivers/gpu/drm/Kconfig	2015-03-06 15:16:55.066978040 +0800
+@@ -130,6 +130,31 @@
+ 
+ source "drivers/gpu/drm/i915/Kconfig"
+ 
++config DRM_EMGD
++       tristate "EMGD Driver for VLV"
++       depends on DRM
++       depends on AGP
++       depends on AGP_INTEL
++       # we need shmfs for the swappable backing store, and in particular
++       # the shmem_readpage() which depends upon tmpfs
++       select SHMEM
++       select TMPFS
++       select DRM_KMS_HELPER
++       select DRM_KMS_FB_HELPER
++       select FB_CFB_FILLRECT
++       select FB_CFB_COPYAREA
++       select FB_CFB_IMAGEBLIT
++       # EMGD (as i915 too) depends on ACPI_VIDEO when ACPI is enabled
++       # but for select to work, need to select ACPI_VIDEO's dependencies, ick
++       select BACKLIGHT_LCD_SUPPORT if ACPI
++       select BACKLIGHT_CLASS_DEVICE if ACPI
++       select VIDEO_OUTPUT_CONTROL if ACPI
++       select INPUT if ACPI
++       select ACPI_VIDEO if ACPI
++       select ACPI_BUTTON if ACPI
++       help
++         EMGD driver for VLV
++
+ config DRM_MGA
+ 	tristate "Matrox g200/g400"
+ 	depends on DRM && PCI
+@@ -162,6 +187,8 @@
+ 	  Choose this option if you have a Savage3D/4/SuperSavage/Pro/Twister
+ 	  chipset. If M is selected the module will be called savage.
+ 
++source "drivers/gpu/drm/ipvr/Kconfig"
++
+ source "drivers/gpu/drm/exynos/Kconfig"
+ 
+ source "drivers/gpu/drm/vmwgfx/Kconfig"

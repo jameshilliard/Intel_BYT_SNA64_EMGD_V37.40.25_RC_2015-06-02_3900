@@ -1,0 +1,10 @@
+--- a/drivers/gpu/drm/drm_crtc.c
++++ a/drivers/gpu/drm/drm_crtc.c.mod
+@@ -1875,6 +1875,7 @@
+ 
+ 	return ret;
+ }
++EXPORT_SYMBOL(drm_mode_setplane);
+ 
+ /**
+  * drm_mode_setcrtc - set CRTC configuration

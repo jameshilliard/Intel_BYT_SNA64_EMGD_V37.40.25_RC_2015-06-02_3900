@@ -1,0 +1,101 @@
+From 1e72450fcb5b5c9014a2c7269fe7232fed742ffa Mon Sep 17 00:00:00 2001
+From: Liu Haoyu <haoyux.liu@intel.com>
+Date: Fri, 20 Mar 2015 15:11:41 +0800
+Subject: [PATCH] PATCH: Enable VC-1 BDU parsing in gst-plugins-bad
+
+BDU parsing is disabled by default in gst-plugins-bad-1.4.5,
+refer to below commit:
+
+    commit 00abb674ca374aa122c8550c571d27aa687ef9f1
+    Author: Alessandro Decina <alessandro.decina@collabora.co.uk>
+    Date:   Thu Feb 23 13:48:57 2012 +0100
+
+        vc1parse: disable BDU parsing until it's more mature
+
+        Parsing and splitting BDUs seems to trigger a few bugs in
+        downstream decoders so disable it for now.
+
+Gstreamer cannot play some SMPTE bitstreams if disable BDU parsing,
+for example SA10210.vc1, SA10211.vc1, SA10212.vc1 and SA10213.vc1.
+
+We need enable BDU parsing to play above SMPTE bitstreams, but some
+WMV videos' playback will occur segmentation fault if enable BDU
+parsing code by remove the "#if 0" and "#endif" statements, for example
+VC1_AP@L1_0640x0480_02.0Mbps_30fps_Mixed_NoSound_SplEffects.wmv.
+
+This patch move BDU parsing code to a safe place, then gstreamer can
+play SMPTE bitstreams and WMV videos successfully.
+
+HSD: 206787
+Signed-off-by: Liu Haoyu <haoyux.liu@intel.com>
+Reviewed-by: Guo DeShui <deshui.guo@intel.com>
+---
+ gst/videoparsers/gstvc1parse.c |   45 +++++++++++++++++++++++++---------------
+ 1 file changed, 28 insertions(+), 17 deletions(-)
+
+diff --git a/gst/videoparsers/gstvc1parse.c b/gst/videoparsers/gstvc1parse.c
+index 02e2d0f..09cc91b 100644
+--- a/gst/videoparsers/gstvc1parse.c
++++ b/gst/videoparsers/gstvc1parse.c
+@@ -474,23 +474,6 @@ gst_vc1_parse_detect (GstBaseParse * parse, GstBuffer * buffer)
+   data = minfo.data;
+   size = minfo.size;
+ 
+-#if 0
+-  /* FIXME: disable BDU check for now as BDU parsing needs more work.
+-   */
+-  while (size >= 4) {
+-    guint32 startcode = GST_READ_UINT32_BE (data);
+-
+-    if ((startcode & 0xffffff00) == 0x00000100) {
+-      GST_DEBUG_OBJECT (vc1parse, "Found BDU startcode");
+-      vc1parse->input_stream_format = VC1_STREAM_FORMAT_BDU_FRAME;
+-      goto detected;
+-    }
+-
+-    data += 4;
+-    size -= 4;
+-  }
+-#endif
+-
+   while (size >= 40) {
+     if (data[3] == 0xc5 && GST_READ_UINT32_LE (data + 4) == 0x00000004 &&
+         GST_READ_UINT32_LE (data + 20) == 0x0000000c) {
+@@ -538,6 +521,34 @@ gst_vc1_parse_detect (GstBaseParse * parse, GstBuffer * buffer)
+     vc1parse->input_stream_format = VC1_STREAM_FORMAT_FRAME_LAYER;
+     goto detected;
+   } else {
++    data = minfo.data;
++    size = minfo.size;
++
++    /* FIXME: BDU parsing maybe will trigger a few bugs in downstream decoders.
++     * Information from below commit:
++     *
++     * commit 00abb674ca374aa122c8550c571d27aa687ef9f1
++     * Author: Alessandro Decina <alessandro.decina@collabora.co.uk>
++     * Date:   Thu Feb 23 13:48:57 2012 +0100
++     *
++     * vc1parse: disable BDU parsing until it's more mature
++     *
++     * Parsing and splitting BDUs seems to trigger a few bugs in
++     * downstream decoders so disable it for now.
++     */
++    while (size >= 4) {
++      guint32 startcode = GST_READ_UINT32_BE (data);
++
++      if ((startcode & 0xffffff00) == 0x00000100) {
++        GST_DEBUG_OBJECT (vc1parse, "Found BDU startcode");
++        vc1parse->input_stream_format = VC1_STREAM_FORMAT_BDU_FRAME;
++        goto detected;
++      }
++
++      data += 4;
++      size -= 4;
++    }
++
+     GST_ERROR_OBJECT (vc1parse, "Can't detect or assume a stream format");
+     gst_buffer_unmap (buffer, &minfo);
+     return GST_FLOW_ERROR;
+--
+1.7.9.5
+

@@ -1,0 +1,98 @@
+--- libva-intel-driver-1.0.20/src/i965_render.c
++++ libva-intel-driver-1.0.20-mod/src/i965_render.c
+@@ -54,6 +54,8 @@
+ 
+ #define PS_KERNEL_NUM_GRF       32
+ #define PS_MAX_THREADS          32
++#define VLV_X0_PS_MAX_THREADS   16
++#define VLV_A0_PS_MAX_THREADS   48
+ 
+ #define I965_GRF_BLOCKS(nreg)	((nreg + 15) / 16 - 1)
+ 
+@@ -2845,12 +2847,28 @@
+               (1 << GEN7_PS_SAMPLER_COUNT_SHIFT) |
+               (5 << GEN7_PS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
+     OUT_BATCH(batch, 0); /* scratch space base offset */
++    if (IS_VALLEYVIEW(i965->intel.device_id)) {
++        if (i965->intel.device_id == PCI_CHIP_VLV2) {
++            OUT_BATCH(batch,
++                 ((VLV_A0_PS_MAX_THREADS - 1) << max_threads_shift) | num_samples |
++                 GEN7_PS_PUSH_CONSTANT_ENABLE |
++                 GEN7_PS_ATTRIBUTE_ENABLE |
++                 GEN7_PS_16_DISPATCH_ENABLE);
++        } else {
++            OUT_BATCH(batch,
++                 ((VLV_X0_PS_MAX_THREADS - 1) << max_threads_shift) | num_samples |
++                 GEN7_PS_PUSH_CONSTANT_ENABLE |
++                 GEN7_PS_ATTRIBUTE_ENABLE |
++                 GEN7_PS_16_DISPATCH_ENABLE);
++        }
++    } else {
++        OUT_BATCH(batch,
++                  ((86 - 1) << max_threads_shift) | num_samples |
++                  GEN7_PS_PUSH_CONSTANT_ENABLE |
++                  GEN7_PS_ATTRIBUTE_ENABLE |
++                  GEN7_PS_16_DISPATCH_ENABLE);
++    }
+     OUT_BATCH(batch, 
+-              ((render_state->max_wm_threads - 1) << max_threads_shift) | num_samples |
+-              GEN7_PS_PUSH_CONSTANT_ENABLE |
+-              GEN7_PS_ATTRIBUTE_ENABLE |
+-              GEN7_PS_16_DISPATCH_ENABLE);
+-    OUT_BATCH(batch, 
+               (6 << GEN7_PS_DISPATCH_START_GRF_SHIFT_0));
+     OUT_BATCH(batch, 0); /* kernel 1 pointer */
+     OUT_BATCH(batch, 0); /* kernel 2 pointer */
+@@ -3126,6 +3144,7 @@
+     assert(render_state->curbe.bo);
+ 
+     if (IS_IVB_GT1(i965->intel.device_id) ||
++        IS_VALLEYVIEW_A0(i965->intel.device_id) ||
+         IS_HSW_GT1(i965->intel.device_id)) {
+         render_state->max_wm_threads = 48;
+     } else if (IS_IVB_GT2(i965->intel.device_id) ||
+@@ -3139,6 +3158,8 @@
+         render_state->max_wm_threads = 72; /* 12 * 6 */
+     } else if (IS_G4X(i965->intel.device_id)) {
+         render_state->max_wm_threads = 50; /* 12 * 5 */
++    } else if (IS_VALLEYVIEW_X0(i965->intel.device_id)) {
++        render_state->max_wm_threads = 16;
+     } else {
+         /* should never get here !!! */
+         assert(0);
+--- libva-intel-driver-1.0.20/src/intel_driver.h
++++ libva-intel-driver-1.0.20-mod/src/intel_driver.h
+@@ -172,6 +172,11 @@
+ #define PCI_CHIP_IVYBRIDGE_S_GT1        0x015a  /* Server */
+ #define PCI_CHIP_IVYBRIDGE_S_GT2        0x016a
+ 
++#define PCI_CHIP_VLV1                   0x0f30
++#define PCI_CHIP_VLV2                   0x0f31
++#define PCI_CHIP_VLV3                   0x0f32
++#define PCI_CHIP_VLV4                   0x0f33
++
+ #define PCI_CHIP_HASWELL_GT1            0x0402 /* Desktop */
+ #define PCI_CHIP_HASWELL_GT2            0x0412
+ #define PCI_CHIP_HASWELL_GT2_PLUS       0x0422
+@@ -226,6 +231,13 @@
+ #define IS_IRONLAKE_M(devid)    (devid == PCI_CHIP_IRONLAKE_M_G)
+ #define IS_IRONLAKE(devid)      (IS_IRONLAKE_D(devid) || IS_IRONLAKE_M(devid))
+ 
++#define IS_VALLEYVIEW_X0(devid) (devid == PCI_CHIP_VLV1)
++#define IS_VALLEYVIEW_A0(devid) (devid == PCI_CHIP_VLV2)
++#define IS_VALLEYVIEW(devid)    (devid == PCI_CHIP_VLV1 || \
++                                 devid == PCI_CHIP_VLV2 || \
++                                 devid == PCI_CHIP_VLV3 || \
++                                 devid == PCI_CHIP_VLV4)
++
+ #define IS_SNB_GT1(devid)       (devid == PCI_CHIP_SANDYBRIDGE_GT1 ||   \
+                                  devid == PCI_CHIP_SANDYBRIDGE_M_GT1 || \
+                                  devid == PCI_CHIP_SANDYBRIDGE_S_GT)
+@@ -291,6 +303,7 @@
+                                  IS_HSW_GT2(devid))
+ 
+ #define IS_GEN7(devid)          (IS_IVYBRIDGE(devid) || \
++                                 IS_VALLEYVIEW(devid) || \
+                                  IS_HASWELL(devid))
+ 
+ #ifndef I915_EXEC_VEBOX

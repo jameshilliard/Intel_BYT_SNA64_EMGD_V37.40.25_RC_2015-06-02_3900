@@ -1,0 +1,25 @@
+From f12c74eb54f609c5b5118fcbdf86d7bb5ac886ef Mon Sep 17 00:00:00 2001
+From: Lim Siew Hoon <siew.hoon.lim@intel.com>
+Date: Tue, 31 Mar 2015 20:21:42 +0800
+Subject: [DRM] LTSI 3.10.61 kernel/DRM: Export symbol drm_mode_setplane
+
+Signed-off-by: Lim Siew Hoon <siew.hoon.lim@intel.com>
+---
+ drivers/gpu/drm/drm_crtc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/gpu/drm/drm_crtc.c b/drivers/gpu/drm/drm_crtc.c
+index 589dd60..dcec4a4 100644
+--- a/drivers/gpu/drm/drm_crtc.c
++++ b/drivers/gpu/drm/drm_crtc.c
+@@ -1947,6 +1947,7 @@ out:
+ 
+ 	return ret;
+ }
++EXPORT_SYMBOL(drm_mode_setplane);
+ 
+ /**
+  * drm_mode_set_config_internal - helper to call ->set_config
+-- 
+1.8.3.1
+

@@ -1,0 +1,61 @@
+diff -rupN -x '*project' libdrm-2.4.34/intel/intel_bufmgr_gem.c libdrm-2.4.34_new/intel/intel_bufmgr_gem.c
+--- libdrm-2.4.34/intel/intel_bufmgr_gem.c	2012-08-22 16:32:47.942567328 +0800
++++ libdrm-2.4.34_new/intel/intel_bufmgr_gem.c	2012-08-22 15:00:43.814811274 +0800
+@@ -2906,6 +2906,8 @@ drm_intel_bufmgr_gem_init(int fd, int ba
+ 		 */
+ 		bufmgr_gem->has_llc = (IS_GEN6(bufmgr_gem->pci_device) |
+ 				IS_GEN7(bufmgr_gem->pci_device));
++		if(IS_VALLEYVIEW(bufmgr_gem->pci_device))
++			bufmgr_gem->has_llc = 0;
+ 	} else
+ 		bufmgr_gem->has_llc = ret == 0;
+ 
+diff -rupN -x '*project' libdrm-2.4.34/intel/intel_chipset.h libdrm-2.4.34_new/intel/intel_chipset.h
+--- libdrm-2.4.34/intel/intel_chipset.h	2012-08-22 16:33:01.249566739 +0800
++++ libdrm-2.4.34_new/intel/intel_chipset.h	2012-08-22 15:03:33.992803759 +0800
+@@ -46,6 +46,11 @@
+ #define PCI_CHIP_IVYBRIDGE_S		0x015a /* server */
+ #define PCI_CHIP_IVYBRIDGE_S_GT2	0x016a /* server */
+ 
++#define PCI_CHIP_VLV1		        0x0F30
++#define PCI_CHIP_VLV2		        0x0F31
++#define PCI_CHIP_VLV3		        0x0F32
++#define PCI_CHIP_VLV4		        0x0F33
++
+ #define PCI_CHIP_HASWELL_GT1            0x0402 /* Desktop */
+ #define PCI_CHIP_HASWELL_GT2            0x0412
+ #define PCI_CHIP_HASWELL_M_GT1          0x0406 /* Mobile */
+@@ -122,9 +127,6 @@
+ 			 dev == PCI_CHIP_SANDYBRIDGE_M_GT2_PLUS || \
+ 			 dev == PCI_CHIP_SANDYBRIDGE_S)
+ 
+-#define IS_GEN7(devid)          (IS_IVYBRIDGE(devid) || \
+-                                 IS_HASWELL(devid))
+-
+ #define IS_IVYBRIDGE(dev)	(dev == PCI_CHIP_IVYBRIDGE_GT1 || \
+ 				 dev == PCI_CHIP_IVYBRIDGE_GT2 || \
+ 				 dev == PCI_CHIP_IVYBRIDGE_M_GT1 || \
+@@ -132,6 +134,11 @@
+ 				 dev == PCI_CHIP_IVYBRIDGE_S || \
+ 				 dev == PCI_CHIP_IVYBRIDGE_S_GT2)
+ 
++#define IS_VALLEYVIEW(dev)     (dev == PCI_CHIP_VLV1 || \
++				dev == PCI_CHIP_VLV2 || \
++				dev == PCI_CHIP_VLV3 || \
++                		dev == PCI_CHIP_VLV4 )
++
+ #define IS_HSW_GT1(devid)       (devid == PCI_CHIP_HASWELL_GT1 || \
+                                  devid == PCI_CHIP_HASWELL_M_GT1)
+ #define IS_HSW_GT2(devid)       (devid == PCI_CHIP_HASWELL_GT2 || \
+@@ -141,6 +148,11 @@
+ #define IS_HASWELL(devid)       (IS_HSW_GT1(devid) || \
+                                  IS_HSW_GT2(devid))
+ 
++
++#define IS_GEN7(devid)          (IS_IVYBRIDGE(devid) || \
++                                 IS_HASWELL(devid) || \
++                                 IS_VALLEYVIEW(devid))
++
+ #define IS_G4X(dev) (dev == 0x2E02 || \
+                      dev == 0x2E12 || \
+                      dev == 0x2E22 || \

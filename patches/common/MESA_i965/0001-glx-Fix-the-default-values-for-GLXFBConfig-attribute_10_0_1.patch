@@ -1,0 +1,51 @@
+From 6b2cf05192eafea5f8b7c895a7202628b43ef78b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fredrik=20H=C3=B6glund?= <fredrik@kde.org>
+Date: Thu, 13 Feb 2014 21:07:09 +0100
+Subject: [PATCH] glx: Fix the default values for GLXFBConfig attributes
+
+The default values for GLX_DRAWABLE_TYPE and GLX_RENDER_TYPE are
+GLX_WINDOW_BIT and GLX_RGBA_BIT respectively, as specified in
+the GLX 1.4 specification.
+
+This fixes the glx-choosefbconfig-defaults piglit test.
+
+Cc: "9.2 10.0 10.1" <mesa-stable@lists.freedesktop.org>
+Reviewed-by: Dave Airlie <airlied@redhat.com>
+Reviewed-by: Ian Romanick <ian.d.romanick@intel.com>
+(cherry picked from commit f41c2f6c332ae9b9784ac924b718963a1086cb85)
+---
+ src/glx/glxcmds.c |    9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/src/glx/glxcmds.c b/src/glx/glxcmds.c
+index 06c4c16..e35d0b1 100644
+--- a/src/glx/glxcmds.c
++++ b/src/glx/glxcmds.c
+@@ -917,13 +917,10 @@ init_fbconfig_for_chooser(struct glx_config * config,
+    if (fbconfig_style_tags) {
+       config->rgbMode = GL_TRUE;
+       config->doubleBufferMode = GLX_DONT_CARE;
+-      /* allow any kind of drawable, including those for off-screen buffers */
+-      config->drawableType = 0;
+-   } else {
+-       /* allow configs which support on-screen drawing */
+-       config->drawableType = GLX_WINDOW_BIT;
++      config->renderType = GLX_RGBA_BIT;
+    }
+ 
++   config->drawableType = GLX_WINDOW_BIT;
+    config->visualRating = GLX_DONT_CARE;
+    config->transparentPixel = GLX_NONE;
+    config->transparentRed = GLX_DONT_CARE;
+@@ -932,8 +929,6 @@ init_fbconfig_for_chooser(struct glx_config * config,
+    config->transparentAlpha = GLX_DONT_CARE;
+    config->transparentIndex = GLX_DONT_CARE;
+ 
+-   /* Set GLX_RENDER_TYPE property to not expect any flags by default. */
+-   config->renderType = 0;
+    config->xRenderable = GLX_DONT_CARE;
+    config->fbconfigID = (GLXFBConfigID) (GLX_DONT_CARE);
+ 
+-- 
+1.7.9.5
+

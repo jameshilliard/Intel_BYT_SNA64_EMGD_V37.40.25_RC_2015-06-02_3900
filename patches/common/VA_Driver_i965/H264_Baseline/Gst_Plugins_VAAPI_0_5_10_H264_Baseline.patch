@@ -1,0 +1,244 @@
+commit 6979e178128321a99ec351f1cff78976488bfee1
+Author: Hang, Jie <jiex.hang@intel.com>
+Date:   Sat Feb 14 04:41:31 2015 +0800
+
+    [vaapi] Update H.264 Baseline patch for gstreamer-vaapi 0.5.10
+
+    Update following patch for 0.5.10:
+    1) When expose supported profiles as caps to upstream, add H.264 baseline profile to supported profiles;
+    2) Response to GST_QUERY_ACCEPT_CAPS query, reject baseline profile streams that are not constraint baseline, otherwise fall back to default checking.
+
+        From 655c3a30351d837d98db1db78d0b0a27958c98df Mon Sep 17 00:00:00 2001
+        From: Wind Yuan <feng.yuan@intel.com>
+        Date: Thu, 2 Jan 2014 13:09:15 +0800
+        Subject: [PATCH] h264 dec: add more checks from pps for hardware profile
+
+        Baseline profile without constraint_set1_flag = 1, without
+        num_slice_groups_minus1 and redundant_pic_cnt_present_flag,
+        still can fallback hw profile to constrained-baseline.
+        ---
+        gst-libs/gst/vaapi/gstvaapidecoder_h264.c |   12 +++++++-----
+        1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/gst-libs/gst/vaapi/gstvaapidecoder_h264.c b/gst-libs/gst/vaapi/gstvaapidecoder_h264.c
+index 9730e12..1f20623 100644
+--- a/gst-libs/gst/vaapi/gstvaapidecoder_h264.c
++++ b/gst-libs/gst/vaapi/gstvaapidecoder_h264.c
+@@ -1269,7 +1269,7 @@ fill_profiles_mvc(GstVaapiDecoderH264 *decoder, GstVaapiProfile profiles[16],
+ }
+ 
+ static GstVaapiProfile
+-get_profile(GstVaapiDecoderH264 *decoder, GstH264SPS *sps, guint dpb_size)
++get_profile(GstVaapiDecoderH264 *decoder, GstH264SPS *sps, GstH264PPS *pps, guint dpb_size)
+ {
+     GstVaapiDecoderH264Private * const priv = &decoder->priv;
+     GstVaapiDisplay * const display = GST_VAAPI_DECODER_DISPLAY(decoder);
+@@ -1283,7 +1283,9 @@ get_profile(GstVaapiDecoderH264 *decoder, GstH264SPS *sps, guint dpb_size)
+     fill_profiles(profiles, &n_profiles, profile);
+     switch (profile) {
+     case GST_VAAPI_PROFILE_H264_BASELINE:
+-        if (sps->constraint_set1_flag) { // A.2.2 (main profile)
++        if (sps->constraint_set1_flag ||
++            (pps->num_slice_groups_minus1 == 0 &&
++             !pps->redundant_pic_cnt_present_flag)) { // A.2.2 (main profile)
+             fill_profiles(profiles, &n_profiles,
+                 GST_VAAPI_PROFILE_H264_CONSTRAINED_BASELINE);
+             fill_profiles(profiles, &n_profiles,
+@@ -1327,7 +1329,7 @@ get_profile(GstVaapiDecoderH264 *decoder, GstH264SPS *sps, guint dpb_size)
+ }
+ 
+ static GstVaapiDecoderStatus
+-ensure_context(GstVaapiDecoderH264 *decoder, GstH264SPS *sps)
++ensure_context(GstVaapiDecoderH264 *decoder, GstH264SPS *sps, GstH264PPS *pps)
+ {
+     GstVaapiDecoder * const base_decoder = GST_VAAPI_DECODER_CAST(decoder);
+     GstVaapiDecoderH264Private * const priv = &decoder->priv;
+@@ -1349,7 +1351,7 @@ ensure_context(GstVaapiDecoderH264 *decoder, GstH264SPS *sps)
+         reset_context = TRUE;
+     }
+ 
+-    profile = get_profile(decoder, sps, dpb_size);
++    profile = get_profile(decoder, sps, pps, dpb_size);
+     if (!profile) {
+         GST_ERROR("unsupported profile_idc %u", sps->profile_idc);
+         return GST_VAAPI_DECODER_STATUS_ERROR_UNSUPPORTED_PROFILE;
+@@ -3530,7 +3532,7 @@ decode_picture(GstVaapiDecoderH264 *decoder, GstVaapiDecoderUnit *unit)
+         break;
+     }
+ 
+-    status = ensure_context(decoder, sps);
++    status = ensure_context(decoder, sps, pps);
+     if (status != GST_VAAPI_DECODER_STATUS_SUCCESS)
+         return status;
+ 
+@@ -3936,6 +3938,91 @@ cleanup:
+     return status;
+ }
+ 
++/* check if it is H264 Constraint baseline profile */
++gboolean gst_vaapidecoder_h264_is_constraint_baseline(const guchar *buf, const guint buf_size) {
++    GstH264NalParser *parser = NULL;
++    GstVaapiParserInfoH264 *pi = NULL;
++    GstH264ParserResult result;
++    GstH264SPS *sps;
++    GstH264PPS *pps;
++    guint i, ofs, num_sps, num_pps;
++    /* assume constraint baseline profile by default, so it can fall back to default check. */
++    gboolean status = TRUE;
++
++    if (buf_size < 8)
++        return status;
++
++    if (buf[0] != 1)
++        return status;
++
++    num_sps = buf[5] & 0x1f;
++    ofs = 6;
++
++    parser = gst_h264_nal_parser_new();
++    if(!parser)
++        return status;
++    for (i = 0; i < num_sps; i++) {
++        pi = gst_vaapi_parser_info_h264_new();
++        if (!pi)
++            goto cleanup_parser;
++
++        result = gst_h264_parser_identify_nalu_avc(
++            parser,
++            buf, ofs, buf_size, 2,
++            &pi->nalu
++        );
++        if (result != GST_H264_PARSER_OK)
++            goto cleanup_pi;
++
++        sps = &pi->data.sps;
++        result = gst_h264_parser_parse_sps(parser, &pi->nalu, sps, TRUE);
++        if (result != GST_H264_PARSER_OK)
++            goto cleanup_pi;
++        ofs = pi->nalu.offset + pi->nalu.size;
++
++        gst_vaapi_parser_info_h264_replace(&pi, NULL);
++    }
++
++    num_pps = buf[ofs];
++    ofs++;
++
++    for (i = 0; i < num_pps; i++) {
++        pi = gst_vaapi_parser_info_h264_new();
++        if (!pi)
++            goto cleanup_parser;
++
++        result = gst_h264_parser_identify_nalu_avc(
++            parser,
++            buf, ofs, buf_size, 2,
++            &pi->nalu
++        );
++        if (result != GST_H264_PARSER_OK) {
++            status = get_status(result);
++            goto cleanup_pi;
++        }
++
++        pps = &pi->data.pps;
++        result = gst_h264_parser_parse_pps(parser, &pi->nalu, pps);
++        if (result != GST_H264_PARSER_OK)
++            goto cleanup_pi;
++        ofs = pi->nalu.offset + pi->nalu.size;
++
++        /* reject non-constraint baseline streams */
++        sps = pps->sequence;
++        if (!(sps && sps->constraint_set1_flag ||
++                    (pps && pps->num_slice_groups_minus1 == 0 &&
++                     !pps->redundant_pic_cnt_present_flag)))
++            status = FALSE;
++        gst_vaapi_parser_info_h264_replace(&pi, NULL);
++    }
++
++cleanup_pi:
++    gst_vaapi_parser_info_h264_replace(&pi, NULL);
++cleanup_parser:
++    gst_h264_nal_parser_free(parser);
++    return status;
++}
++
+ static GstVaapiDecoderStatus
+ ensure_decoder(GstVaapiDecoderH264 *decoder)
+ {
+diff --git a/gst-libs/gst/vaapi/gstvaapidecoder_h264.h b/gst-libs/gst/vaapi/gstvaapidecoder_h264.h
+index f9949dd..efd9b9e 100644
+--- a/gst-libs/gst/vaapi/gstvaapidecoder_h264.h
++++ b/gst-libs/gst/vaapi/gstvaapidecoder_h264.h
+@@ -55,6 +55,9 @@ void
+ gst_vaapi_decoder_h264_set_alignment(GstVaapiDecoderH264 *decoder,
+     GstVaapiStreamAlignH264 alignment);
+ 
++gboolean
++gst_vaapidecoder_h264_is_constraint_baseline(const guchar *buf, const guint buf_size);
++
+ G_END_DECLS
+ 
+ #endif /* GST_VAAPI_DECODER_H264_H */
+diff --git a/gst/vaapi/gstvaapidecode.c b/gst/vaapi/gstvaapidecode.c
+index a9c2462..8855b1a 100644
+--- a/gst/vaapi/gstvaapidecode.c
++++ b/gst/vaapi/gstvaapidecode.c
+@@ -924,6 +924,15 @@ gst_vaapidecode_ensure_allowed_caps(GstVaapiDecode *decode)
+                 profile_name, NULL);
+ 
+         allowed_caps = gst_caps_merge(allowed_caps, caps);
++
++        /* add H.264 baseline profile to supported profiles */
++        if(strcmp(media_type_name, "video/x-h264") == 0 && strcmp(profile_name, "constrained-baseline") == 0) {
++            caps = gst_caps_from_string(media_type_name);
++            profile_name = "baseline";
++            structure = gst_caps_get_structure (caps, 0);
++            gst_structure_set (structure, "profile", G_TYPE_STRING, profile_name, NULL);
++            allowed_caps = gst_caps_merge(allowed_caps, caps);
++        }
+     }
+     decode->allowed_caps = gst_caps_simplify (allowed_caps);
+ 
+@@ -985,6 +994,44 @@ gst_vaapidecode_query(GST_PAD_QUERY_FUNCTION_ARGS)
+             break;
+         }
+ #endif
++
++        case GST_QUERY_ACCEPT_CAPS: {
++            /*
++             * Response to GST_QUERY_ACCEPT_CAPS query, reject baseline profile
++             * streams that are not constraint baseline, otherwise fall back to
++             * default checking.
++             */
++            GstCaps *caps;
++            gst_query_parse_accept_caps (query, &caps);
++            GST_INFO_OBJECT(decode, "accept caps %"GST_PTR_FORMAT, caps);
++            if(caps) {
++                GstVaapiProfile profile = gst_vaapi_profile_from_caps (caps);
++                GstStructure *const structure = gst_caps_get_structure (caps, 0);
++                const GValue *v_codec_data = gst_structure_get_value (structure, "codec_data");
++                GstBuffer *codec_data;
++                GstMapInfo map_info;
++                const guchar *buf;
++                guint buf_size;
++                gboolean result;
++
++                /* check if it is H264 Constraint baseline profile */
++                if (profile == GST_VAAPI_PROFILE_H264_BASELINE && v_codec_data) {
++                    codec_data = gst_value_get_buffer (v_codec_data);
++                    if (gst_buffer_map (codec_data, &map_info, GST_MAP_READ)) {
++                        buf = map_info.data;
++                        buf_size = map_info.size;
++                        result = gst_vaapidecoder_h264_is_constraint_baseline(buf, buf_size);
++                        gst_buffer_unmap(codec_data, &map_info);
++                        if(!result) {
++                            gst_query_set_accept_caps_result (query, FALSE);
++                            break;
++                        }
++                    }
++                }
++            }
++            /* Fall through to default handling */
++        }
++
+         default:
+             res = GST_PAD_QUERY_FUNCTION_CALL(plugin->sinkpad_query, pad,
+                 parent, query);

@@ -1,0 +1,137 @@
+From 66bf7088743a8f40d4dfcc0be5024dab683e810e Mon Sep 17 00:00:00 2001
+From: zou xiaohong <xiaohong.zou@intel.com>
+Date: Thu, 26 Feb 2015 18:11:22 -0800
+Subject: [patch] gstreaemr-vaapi: For support VP8 on Baytrail use VXD392.
+
+For VP8 must get video profile before create surface and context, change codes in context_create() to implement it.
+Change slice parameter's value for the demand of VXD392 VP8's decoder.
+Aligned width and height by 16 bytes for the demand of VXD392 VP8's decoder.
+
+Signed-off-by: zou xiaohong <xiaohong.zou@intel.com>
+---
+ gst-libs/gst/vaapi/gstvaapicontext.c     | 34 ++++++++++++++++---------------
+ gst-libs/gst/vaapi/gstvaapidecoder_vp8.c | 35 ++++++++++++++++++++------------
+ 2 files changed, 40 insertions(+), 29 deletions(-)
+ mode change 100644 => 100755 gst-libs/gst/vaapi/gstvaapicontext.c
+ mode change 100644 => 100755 gst-libs/gst/vaapi/gstvaapidecoder_vp8.c
+
+diff --git a/gst-libs/gst/vaapi/gstvaapicontext.c b/gst-libs/gst/vaapi/gstvaapicontext.c
+old mode 100644
+new mode 100755
+index a2c68a3..3f24e9a
+--- a/gst-libs/gst/vaapi/gstvaapicontext.c
++++ b/gst-libs/gst/vaapi/gstvaapicontext.c
+@@ -170,23 +170,7 @@ context_create (GstVaapiContext * context)
+   gboolean success = FALSE;
+   guint i, value, va_chroma_format;
+ 
+-  if (!context->surfaces && !context_create_surfaces (context))
+-    goto cleanup;
+ 
+-  /* Create VA surfaces list for vaCreateContext() */
+-  surfaces = g_array_sized_new (FALSE,
+-      FALSE, sizeof (VASurfaceID), context->surfaces->len);
+-  if (!surfaces)
+-    goto cleanup;
+-
+-  for (i = 0; i < context->surfaces->len; i++) {
+-    GstVaapiSurface *const surface = g_ptr_array_index (context->surfaces, i);
+-    if (!surface)
+-      goto cleanup;
+-    surface_id = GST_VAAPI_OBJECT_ID (surface);
+-    g_array_append_val (surfaces, surface_id);
+-  }
+-  g_assert (surfaces->len == context->surfaces->len);
+ 
+   /* Reset profile and entrypoint */
+   if (!cip->profile || !cip->entrypoint)
+@@ -260,6 +244,24 @@ context_create (GstVaapiContext * context)
+   if (!vaapi_check_status (status, "vaCreateConfig()"))
+     goto cleanup;
+ 
++  if (!context->surfaces && !context_create_surfaces (context))
++    goto cleanup;
++
++  /* Create VA surfaces list for vaCreateContext() */
++  surfaces = g_array_sized_new (FALSE,
++      FALSE, sizeof (VASurfaceID), context->surfaces->len);
++  if (!surfaces)
++    goto cleanup;
++
++  for (i = 0; i < context->surfaces->len; i++) {
++    GstVaapiSurface *const surface = g_ptr_array_index (context->surfaces, i);
++    if (!surface)
++      goto cleanup;
++    surface_id = GST_VAAPI_OBJECT_ID (surface);
++    g_array_append_val (surfaces, surface_id);
++  }
++  g_assert (surfaces->len == context->surfaces->len);
++
+   GST_VAAPI_DISPLAY_LOCK (display);
+   status = vaCreateContext (GST_VAAPI_DISPLAY_VADISPLAY (display),
+       context->va_config, cip->width, cip->height, VA_PROGRESSIVE,
+diff --git a/gst-libs/gst/vaapi/gstvaapidecoder_vp8.c b/gst-libs/gst/vaapi/gstvaapidecoder_vp8.c
+old mode 100644
+new mode 100755
+index 3e078b0..22efa7a
+--- a/gst-libs/gst/vaapi/gstvaapidecoder_vp8.c
++++ b/gst-libs/gst/vaapi/gstvaapidecoder_vp8.c
+@@ -365,18 +365,20 @@ fill_slice (GstVaapiDecoderVp8 * decoder, GstVaapiSlice * slice)
+   GstVp8FrameHdr *const frame_hdr = &priv->frame_hdr;
+   gint i;
+ 
+-  /* Fill in VASliceParameterBufferVP8 */
+-  slice_param->slice_data_offset = frame_hdr->data_chunk_size;
+-  slice_param->macroblock_offset = frame_hdr->header_size;
+-  slice_param->num_of_partitions =
+-      (1 << frame_hdr->log2_nbr_of_dct_partitions) + 1;
+-
+-  slice_param->partition_size[0] =
+-      frame_hdr->first_part_size - ((slice_param->macroblock_offset + 7) >> 3);
+-  for (i = 1; i < slice_param->num_of_partitions; i++)
+-    slice_param->partition_size[i] = frame_hdr->partition_size[i - 1];
+-  for (; i < G_N_ELEMENTS (slice_param->partition_size); i++)
+-    slice_param->partition_size[i] = 0;
++guint tag_size = frame_hdr->key_frame ? 10 : 3;
++slice_param->slice_data_offset = 0;
++slice_param->num_of_partitions = (1 << frame_hdr->log2_nbr_of_dct_partitions) + 1;
++
++slice_param->macroblock_offset = frame_hdr->header_size + (tag_size + 1) *8 - (tag_size<<3);
++slice_param->slice_data_size -= tag_size - frame_hdr->data_chunk_size;
++
++slice_param->partition_size[0] =
++  frame_hdr->first_part_size - ((slice_param->macroblock_offset + 7) >> 3);
++
++for (i = 1; i < slice_param->num_of_partitions; i++)
++	slice_param->partition_size[i] = frame_hdr->partition_size[i - 1];
++for (; i < G_N_ELEMENTS (slice_param->partition_size); i++)
++	slice_param->partition_size[i] = 0;
+ 
+   return TRUE;
+ }
+@@ -387,7 +389,10 @@ decode_slice (GstVaapiDecoderVp8 * decoder, GstVaapiPicture * picture,
+ {
+   GstVaapiSlice *slice;
+ 
+-  slice = GST_VAAPI_SLICE_NEW (VP8, decoder, buf, buf_size);
++  GstVaapiDecoderVp8Private *const priv = &decoder->priv;
++  GstVp8FrameHdr *const frame_hdr = &priv->frame_hdr;
++
++  slice = GST_VAAPI_SLICE_NEW (VP8, decoder, buf + frame_hdr->data_chunk_size, buf_size - frame_hdr->data_chunk_size);
+   if (!slice) {
+     GST_ERROR ("failed to allocate slice");
+     return GST_VAAPI_DECODER_STATUS_ERROR_ALLOCATION_FAILED;
+@@ -537,6 +542,10 @@ parse_frame_header (GstVaapiDecoderVp8 * decoder, const guchar * buf,
+       (frame_hdr->width != priv->width || frame_hdr->height != priv->height)) {
+     priv->width = frame_hdr->width;
+     priv->height = frame_hdr->height;
++
++    priv->width = ((priv->width + 15) / 16 ) * 16;
++    priv->height = ((priv->height + 15) / 16 ) * 16;
++
+     priv->size_changed = TRUE;
+   }
+   return GST_VAAPI_DECODER_STATUS_SUCCESS;
+-- 
+1.8.1.4
+

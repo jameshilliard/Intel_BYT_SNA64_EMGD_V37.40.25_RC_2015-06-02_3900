@@ -1,0 +1,40 @@
+diff --git a/src/object_heap.c b/src/object_heap.c
+index cc6f60b..a6f818d 100644
+--- a/src/object_heap.c
++++ b/src/object_heap.c
+@@ -213,6 +213,10 @@ object_base_p object_heap_next( object_heap_p heap, object_heap_iterator *iter )
+  */
+ void object_heap_free( object_heap_p heap, object_base_p obj )
+ {
++    int i;
++    int obj_index;
++    int bucket_index;
++    int free_bucket = 1;
+     /* Don't complain about NULL pointers */
+     if (NULL != obj)
+     {
+@@ -224,6 +228,24 @@ void object_heap_free( object_heap_p heap, object_base_p obj )
+         heap->next_free = obj->id & OBJECT_HEAP_ID_MASK;
+         _i965UnlockMutex(&heap->mutex);
+     }
++    for (i = heap->heap_size - heap->heap_increment; i < heap->heap_size; i++)
++    {
++        /* Check if object is not still allocated */
++        bucket_index = i / heap->heap_increment;
++        obj_index = i % heap->heap_increment;
++        obj = (object_base_p) (heap->bucket[bucket_index] + obj_index * heap->object_size);
++        if( obj->next_free == ALLOCATED || heap->next_free == i)
++            free_bucket = 0;
++    }
++    /* actively recycle bucket on free */
++    if(free_bucket) {
++        i = (heap->heap_size-1) / heap->heap_increment;
++        printf("free bucket %d/%d %p\n", i, heap->num_buckets, heap->bucket[i]);
++        free(heap->bucket[i]);
++        heap->bucket[i] = NULL;
++        heap->heap_size -= heap->heap_increment;
++        heap->num_buckets-=8;
++    }
+ }
+ 
+ /*

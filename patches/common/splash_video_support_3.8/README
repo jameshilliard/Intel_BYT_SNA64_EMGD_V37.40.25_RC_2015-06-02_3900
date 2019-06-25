@@ -1,0 +1,98 @@
+Overal REMARK: HAVE NOT TESTED WITH 64 BIT SYSTEM
+
+
+A. Packages used:
+=================
+1. libva-1.2.1.tar.bz2 (http://www.freedesktop.org/software/vaapi/releases/libva/)
+2. libva-intel-driver-1.2.2.tar.bz2 (http://www.freedesktop.org/software/vaapi/releases/libva-intel-driver/)
+3. mplayer w/VAAPI (git clone -b hwaccel-vaapi git://gitorious.org/vaapi/mplayer.git mplayer-vaapi)
+	the last tested commit: 1923fa10ed77bbf8408f2ce312d85a97dab1f0f3 
+
+B. Patches used:
+================
+1. linux-3.8_drm_mode_setplane_symbol_export.patch
+2. libva-intel-driver-1.2.2-headless.patch
+3. mplayer-vaapi-headless.patch
+
+C. Instructions:
+================
+1\ Download all the packages above
+
+
+2\ building drm driver:
+    > cd <KERNEL_DIR>
+    > patch -p1 < linux-3.8_drm_mode_setplane_symbol_export.patch
+    > make
+   Remark:
+	a) Reboot using the new bzImage with the newly build drm driver
+
+
+3\ building emgd driver with splash video support
+    - #define SPLASH_VIDEO_SUPPORT in include/emgd_drm.h
+    - rebuild the emgd driver
+
+
+4\ buidling libva:
+* If base Fedora 32:
+    > tar -jxvf libva-1.1.1.tar.bz2
+    > cd libva-1.1.1
+    > ./configure --prefix=/usr 
+    > make
+    > make install
+
+* If base Fedora 64:
+    > tar -jxvf libva-1.1.1.tar.bz2
+    > cd libva-1.1.1
+    > rm -rf /usr/lib64/libva*
+    > ./configure --prefix=/usr --libdir=/usr/lib64
+    > make
+    > make install
+
+
+5\ building libva-driver-intel:
+* If base Fedora 32
+    > tar -jxvf libva-intel-driver-1.2.2.tar.bz2
+    > cd libva-intel-driver-1.2.2
+    > patch -p1 < libva-intel-driver-1.2.2-headless.patch
+    > ./configure --prefix=/usr --disable-wayland
+    > make
+    > make install
+
+* If base Tizen 32
+    > tar -jxvf libva-intel-driver-1.2.2.tar.bz2
+    > cd libva-intel-driver-1.2.2
+    > patch -p1 < libva-intel-driver-1.2.2-headless.patch
+    > ./configure --prefix=/usr 
+    > make
+    > make install
+    Remark:
+	a) If base Fedora 32, driver installed as /usr/lib/dri/i965_drv_video.so, and 
+           auto create a link named emgd_drv_video.so (libva looks for that driver name)
+	b) If base Fedora 64, driver installed as /usr/lib64/dri/i965_drv_video.so, and 
+           auto create a link named emgd_drv_video.so (libva looks for that driver name)
+
+
+6\ building mplayer:
+    > cd mplayer-vaapi
+    > patch -p1 < mplayer-vaapi-headless.patch
+    > ./configure --enable-vaapi --disable-xinerama
+    > make
+    Remark:
+	a) Tested based on "1923fa10ed77bbf8408f2ce312d85a97dab1f0f3" commit of mplayer
+	b) If not able to compile on Tizen simply because of missing scsi.h, scsi_ioctl.h 
+           and sg.h in /usr/include/scsi, you could add another option "disabled-dvd-internal"
+	   to the configure option to avoid compiling issue upon missing some of the SCSI headers 
+           since we will not be connecting to any DVD player. 
+	   Command: - 
+		./configure --prefix=/usr/ --enable-vaapi --disable-xinerama --disable-dvdread-internal
+
+
+7\ play video using mplayer (splash_video_plane_hold is to prevent weston from disabling sprite):
+    > ./mplayer -nosound -va vaapi -vo vaapi <video file>
+   Remark:
+	a) video resolution must same as display resolution, if video resolution is different 
+           with display resolution then use "-x <width> -y <height>" to scale video accordingly
+
+
+9\ startx can be called and video will continue to play
+

@@ -1,0 +1,281 @@
+From 4cdaab64d17088055ffab2f4e9059703e7c94e90 Mon Sep 17 00:00:00 2001
+From: Guo Deshui <deshui.guo@intel.com>
+Date: Mon, 2 Mar 2015 16:59:04 +0800
+Subject: [PATCH] LIBAVCODEC/VC1: Update VC1 interlaced frame parameters for
+ vaapi vc1 start frame
+
+Update VC1 interlaced frame parameters for
+vaapi vc1 start frame. Such as : cbp_table,
+mb_mode_table, bp_field_tx,num_reference_pictures
+mv_table, two_mv_block_pattern_table,
+four_mv_switch,four_mv_block_pattern_table,
+extended_dmv_range.
+
+Tests have been carried out with the conformance
+test bitstreams provided by SMPTE:
+    SA10210, SA10211, SA10212, SA10213, SA10214,
+SA10215, SA10216,SA10217/
+
+This patch is for ffmpeg commit
+bc63a760837c8b173f2a3820ccb06f9cac1c07b4
+Author: Andrey Utkin <andrey.krieger.utkin@gmail.com>
+Date:   Fri May 10 18:45:11 2013 +0300
+
+    pngenc: Add 'dpi', 'dpm' options
+
+    Signed-off-by: Michael Niedermayer <michaelni@gmx.at>
+
+Which is for Mplayer branch hwaccel-vaapi.
+
+Signed-off-by: Guo Deshui <deshui.guo@intel.com>
+---
+ libavcodec/vaapi_vc1.c |   48 +++++++++++++++++++++++++++++++++++-------------
+ libavcodec/vc1.c       |   14 ++++++++++++++
+ libavcodec/vc1.h       |    9 +++++++++
+ libavcodec/vc1dec.c    |   11 +++++++++++
+ 4 files changed, 69 insertions(+), 13 deletions(-)
+
+diff --git a/libavcodec/vaapi_vc1.c b/libavcodec/vaapi_vc1.c
+index b8f0530..bf2fcc7 100644
+--- a/libavcodec/vaapi_vc1.c
++++ b/libavcodec/vaapi_vc1.c
+@@ -40,6 +40,10 @@ static int get_VAMvModeVC1(enum MVModes mv_mode)
+ /** Check whether the MVTYPEMB bitplane is present */
+ static inline int vc1_has_MVTYPEMB_bitplane(VC1Context *v)
+ {
++    if (v->profile == PROFILE_ADVANCED)
++        if (v->fcm != PROGRESSIVE)
++            return 0;
++
+     if (v->mv_type_is_raw)
+         return 0;
+     return v->s.pict_type == AV_PICTURE_TYPE_P &&
+@@ -51,8 +55,14 @@ static inline int vc1_has_MVTYPEMB_bitplane(VC1Context *v)
+ /** Check whether the SKIPMB bitplane is present */
+ static inline int vc1_has_SKIPMB_bitplane(VC1Context *v)
+ {
+-    if (v->skip_is_raw)
+-        return 0;
++    if (v->profile == PROFILE_ADVANCED) {
++        if ((v->skip_is_raw)||(v->fcm == ILACE_FIELD))
++            return 0;
++    } else {
++        if (v->skip_is_raw)
++            return 0;
++    }
++
+     return v->s.pict_type == AV_PICTURE_TYPE_P ||
+            (v->s.pict_type == AV_PICTURE_TYPE_B && !v->bi_type);
+ }
+@@ -65,6 +75,18 @@ static inline int vc1_has_DIRECTMB_bitplane(VC1Context *v)
+     return v->s.pict_type == AV_PICTURE_TYPE_B && !v->bi_type;
+ }
+ 
++/** Check whether the FIELDTX bitplane is present */
++static inline int vc1_has_FIELDTX_bitplane(VC1Context *v)
++{
++    if (v->profile != PROFILE_ADVANCED)
++        return 0;
++    if (v->field_tx)
++        return 0;
++
++    return ((v->fcm == ILACE_FRAME) && (v->s.pict_type == AV_PICTURE_TYPE_I ||
++            v->s.pict_type == AV_PICTURE_TYPE_B));
++}
++
+ /** Check whether the ACPRED bitplane is present */
+ static inline int vc1_has_ACPRED_bitplane(VC1Context *v)
+ {
+@@ -103,7 +125,7 @@ static int vc1_get_PTYPE(VC1Context *v)
+ static inline VAMvModeVC1 vc1_get_MVMODE(VC1Context *v)
+ {
+     if (v->s.pict_type == AV_PICTURE_TYPE_P ||
+-        (v->s.pict_type == AV_PICTURE_TYPE_B && !v->bi_type))
++        v->s.pict_type == AV_PICTURE_TYPE_B)
+         return get_VAMvModeVC1(v->mv_mode);
+     return 0;
+ }
+@@ -190,8 +212,8 @@ static int vaapi_vc1_start_frame(AVCodecContext *avctx, av_unused const uint8_t
+     pic_param->range_mapping_fields.bits.chroma_flag                = v->range_mapuv_flag;
+     pic_param->range_mapping_fields.bits.chroma                     = v->range_mapuv;
+     pic_param->b_picture_fraction                                   = v->bfraction_lut_index;
+-    pic_param->cbp_table                                            = v->cbpcy_vlc ? v->cbpcy_vlc - ff_vc1_cbpcy_p_vlc : 0;
+-    pic_param->mb_mode_table                                        = 0; /* XXX: interlaced frame */
++    pic_param->cbp_table                                            = v->cbp_table;
++    pic_param->mb_mode_table                                        = v->mb_mode_table;
+     pic_param->range_reduction_frame                                = v->rangeredfrm;
+     pic_param->rounding_control                                     = v->rnd;
+     pic_param->post_processing                                      = v->postproc;
+@@ -202,7 +224,7 @@ static int vaapi_vc1_start_frame(AVCodecContext *avctx, av_unused const uint8_t
+     pic_param->picture_fields.bits.picture_type                     = vc1_get_PTYPE(v);
+     pic_param->picture_fields.bits.frame_coding_mode                = v->fcm;
+     pic_param->picture_fields.bits.top_field_first                  = v->tff;
+-    pic_param->picture_fields.bits.is_first_field                   = v->fcm == 0; /* XXX: interlaced frame */
++    pic_param->picture_fields.bits.is_first_field                   = v->first_field;
+     pic_param->picture_fields.bits.intensity_compensation           = v->mv_mode == MV_PMODE_INTENSITY_COMP;
+     pic_param->raw_coding.value                                     = 0; /* reset all bits */
+     pic_param->raw_coding.flags.mv_type_mb                          = v->mv_type_is_raw;
+@@ -216,26 +238,26 @@ static int vaapi_vc1_start_frame(AVCodecContext *avctx, av_unused const uint8_t
+     pic_param->bitplane_present.flags.bp_mv_type_mb                 = vc1_has_MVTYPEMB_bitplane(v);
+     pic_param->bitplane_present.flags.bp_direct_mb                  = vc1_has_DIRECTMB_bitplane(v);
+     pic_param->bitplane_present.flags.bp_skip_mb                    = vc1_has_SKIPMB_bitplane(v);
+-    pic_param->bitplane_present.flags.bp_field_tx                   = 0; /* XXX: interlaced frame */
++    pic_param->bitplane_present.flags.bp_field_tx                   = vc1_has_FIELDTX_bitplane(v);
+     pic_param->bitplane_present.flags.bp_forward_mb                 = 0; /* XXX: interlaced frame */
+     pic_param->bitplane_present.flags.bp_ac_pred                    = vc1_has_ACPRED_bitplane(v);
+     pic_param->bitplane_present.flags.bp_overflags                  = vc1_has_OVERFLAGS_bitplane(v);
+     pic_param->reference_fields.value                               = 0; /* reset all bits */
+     pic_param->reference_fields.bits.reference_distance_flag        = v->refdist_flag;
+     pic_param->reference_fields.bits.reference_distance             = 0; /* XXX: interlaced frame */
+-    pic_param->reference_fields.bits.num_reference_pictures         = 0; /* XXX: interlaced frame */
++    pic_param->reference_fields.bits.num_reference_pictures         = v->numref;
+     pic_param->reference_fields.bits.reference_field_pic_indicator  = 0; /* XXX: interlaced frame */
+     pic_param->mv_fields.value                                      = 0; /* reset all bits */
+     pic_param->mv_fields.bits.mv_mode                               = vc1_get_MVMODE(v);
+     pic_param->mv_fields.bits.mv_mode2                              = vc1_get_MVMODE2(v);
+-    pic_param->mv_fields.bits.mv_table                              = s->mv_table_index;
+-    pic_param->mv_fields.bits.two_mv_block_pattern_table            = 0; /* XXX: interlaced frame */
+-    pic_param->mv_fields.bits.four_mv_switch                        = 0; /* XXX: interlaced frame */
+-    pic_param->mv_fields.bits.four_mv_block_pattern_table           = 0; /* XXX: interlaced frame */
++    pic_param->mv_fields.bits.mv_table                              = v->mv_table;
++    pic_param->mv_fields.bits.two_mv_block_pattern_table            = v->two_mv_bp_table;
++    pic_param->mv_fields.bits.four_mv_switch                        = v->fourmvswitch;
++    pic_param->mv_fields.bits.four_mv_block_pattern_table           = v->four_mv_bp_table;
+     pic_param->mv_fields.bits.extended_mv_flag                      = v->extended_mv;
+     pic_param->mv_fields.bits.extended_mv_range                     = v->mvrange;
+     pic_param->mv_fields.bits.extended_dmv_flag                     = v->extended_dmv;
+-    pic_param->mv_fields.bits.extended_dmv_range                    = 0; /* XXX: interlaced frame */
++    pic_param->mv_fields.bits.extended_dmv_range                    = v->dmvrange;
+     pic_param->pic_quantizer_fields.value                           = 0; /* reset all bits */
+     pic_param->pic_quantizer_fields.bits.dquant                     = v->dquant;
+     pic_param->pic_quantizer_fields.bits.quantizer                  = v->quantizer_mode;
+diff --git a/libavcodec/vc1.c b/libavcodec/vc1.c
+index 4c17033..0adee36 100644
+--- a/libavcodec/vc1.c
++++ b/libavcodec/vc1.c
+@@ -849,6 +849,8 @@ int ff_vc1_parse_frame_header_adv(VC1Context *v, GetBitContext* gb)
+     int mbmodetab, imvtab, icbptab, twomvbptab, fourmvbptab; /* useful only for debugging */
+     int field_mode, fcm;
+ 
++    mbmodetab = imvtab = icbptab = twomvbptab = fourmvbptab = 0;
++
+     v->numref=0;
+     v->p_frame_skipped = 0;
+     if (v->second_field) {
+@@ -1154,10 +1156,13 @@ int ff_vc1_parse_frame_header_adv(VC1Context *v, GetBitContext* gb)
+             /* Hopefully this is correct for P frames */
+             v->s.mv_table_index = get_bits(gb, 2); //but using ff_vc1_ tables
+             v->cbpcy_vlc        = &ff_vc1_cbpcy_p_vlc[get_bits(gb, 2)];
++	    v->cbp_table = v->cbpcy_vlc ? v->cbpcy_vlc - ff_vc1_cbpcy_p_vlc : 0;
++            v->mv_table = v->s.mv_table_index;
+         } else if (v->fcm == ILACE_FRAME) { // frame interlaced
+             v->qs_last          = v->s.quarter_sample;
+             v->s.quarter_sample = 1;
+             v->s.mspel          = 1;
++            v->mv_mode          = 1;
+         } else {    // field interlaced
+             mbmodetab = get_bits(gb, 3);
+             imvtab = get_bits(gb, 2 + v->numref);
+@@ -1294,6 +1299,7 @@ int ff_vc1_parse_frame_header_adv(VC1Context *v, GetBitContext* gb)
+                    "Imode: %i, Invert: %i\n", status>>1, status&1);
+             v->s.mv_table_index = get_bits(gb, 2);
+             v->cbpcy_vlc = &ff_vc1_cbpcy_p_vlc[get_bits(gb, 2)];
++            v->mv_table = v->s.mv_table_index;
+         }
+ 
+         if (v->dquant) {
+@@ -1314,6 +1320,14 @@ int ff_vc1_parse_frame_header_adv(VC1Context *v, GetBitContext* gb)
+         break;
+     }
+ 
++    if ((v->s.pict_type == AV_PICTURE_TYPE_P || v->s.pict_type == AV_PICTURE_TYPE_B)&&(v->fcm != PROGRESSIVE)) {
++        v->mb_mode_table = mbmodetab;
++        v->four_mv_bp_table = fourmvbptab;
++        v->mv_table = imvtab;
++        v->cbp_table = icbptab;
++        v->two_mv_bp_table = twomvbptab;
++    }
++
+     if (v->fcm != PROGRESSIVE && !v->s.quarter_sample) {
+         v->range_x <<= 1;
+         v->range_y <<= 1;
+diff --git a/libavcodec/vc1.h b/libavcodec/vc1.h
+index c77ab7c..3ed60c2 100644
+--- a/libavcodec/vc1.h
++++ b/libavcodec/vc1.h
+@@ -399,6 +399,15 @@ typedef struct VC1Context{
+     int end_mb_x;                ///< Horizontal macroblock limit (used only by mss2)
+ 
+     int parse_only;              ///< Context is used within parser
++
++    /* For Interlace */
++    int first_field;
++    int cbp_table;
++    int mv_table;
++    int four_mv_bp_table;
++    int mb_mode_table;
++    int two_mv_bp_table;
++    int field_tx;
+ } VC1Context;
+ 
+ /** Find VC-1 marker in buffer
+diff --git a/libavcodec/vc1dec.c b/libavcodec/vc1dec.c
+index bce0b45..83de9f0 100644
+--- a/libavcodec/vc1dec.c
++++ b/libavcodec/vc1dec.c
+@@ -155,6 +155,8 @@ static void vc1_put_signed_blocks_clamped(VC1Context *v)
+         }
+     }
+ 
++    v->field_tx = fieldtx;
++
+ #define inc_blk_idx(idx) do { \
+         idx++; \
+         if (idx >= v->n_allocated_blks) \
+@@ -3959,6 +3961,9 @@ static int vc1_decode_p_mb_intfr(VC1Context *v)
+         vc1_pred_mv_intfr(v, 0, 0, 0, 1, v->range_x, v->range_y, v->mb_type[0], 0);
+         vc1_mc_1mv(v, 0);
+     }
++
++    v->field_tx = fieldtx;
++
+     if (s->mb_x == s->mb_width - 1)
+         memmove(v->is_intra_base, v->is_intra, sizeof(v->is_intra_base[0])*s->mb_stride);
+     return 0;
+@@ -4730,6 +4735,9 @@ static int vc1_decode_b_mb_intfr(VC1Context *v)
+             }
+         }
+     }
++
++    v->field_tx = fieldtx;
++
+     if (s->mb_x == s->mb_width - 1)
+         memmove(v->is_intra_base, v->is_intra, sizeof(v->is_intra_base[0])*s->mb_stride);
+     v->cbp[s->mb_x]      = block_cbp;
+@@ -6017,6 +6025,7 @@ static int vc1_decode_frame(AVCodecContext *avctx, void *data,
+     } else if (avctx->hwaccel) {
+         if (v->field_mode && buf_start_second_field) {
+             // decode first field
++            v->first_field = 1;
+             s->picture_structure = PICT_BOTTOM_FIELD - v->tff;
+             if (avctx->hwaccel->start_frame(avctx, buf_start, buf_start_second_field - buf_start) < 0)
+                 goto err;
+@@ -6026,6 +6035,7 @@ static int vc1_decode_frame(AVCodecContext *avctx, void *data,
+                 goto err;
+ 
+             // decode second field
++            v->first_field = 0;
+             s->gb = slices[n_slices1 + 1].gb;
+             s->picture_structure = PICT_TOP_FIELD + v->tff;
+             v->second_field = 1;
+@@ -6044,6 +6054,7 @@ static int vc1_decode_frame(AVCodecContext *avctx, void *data,
+                 goto err;
+         } else {
+             s->picture_structure = PICT_FRAME;
++            v->first_field = 1;
+             if (avctx->hwaccel->start_frame(avctx, buf_start, (buf + buf_size) - buf_start) < 0)
+                 goto err;
+             if (avctx->hwaccel->decode_slice(avctx, buf_start, (buf + buf_size) - buf_start) < 0)
+-- 
+1.7.4.4
+

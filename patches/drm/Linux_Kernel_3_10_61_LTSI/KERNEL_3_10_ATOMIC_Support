@@ -1,0 +1,1814 @@
+diff --git a/drivers/gpu/drm/Makefile b/drivers/gpu/drm/Makefile
+index cd73a3f..be7451c 100644
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -12,7 +12,7 @@ drm-y       :=	drm_auth.o drm_buffer.o drm_bufs.o drm_cache.o \
+ 		drm_platform.o drm_sysfs.o drm_hashtab.o drm_mm.o \
+ 		drm_crtc.o drm_modes.o drm_edid.o \
+ 		drm_info.o drm_debugfs.o drm_encoder_slave.o \
+-		drm_trace_points.o drm_global.o drm_prime.o \
++		drm_trace_points.o drm_global.o drm_prime.o drm_flip.o \
+ 		drm_rect.o drm_vma_manager.o
+ 
+ drm-$(CONFIG_COMPAT) += drm_ioc32.o
+diff --git a/drivers/gpu/drm/drm_crtc.c b/drivers/gpu/drm/drm_crtc.c
+index 589dd60..66a17a7 100644
+--- a/drivers/gpu/drm/drm_crtc.c
++++ b/drivers/gpu/drm/drm_crtc.c
+@@ -361,7 +361,8 @@ struct drm_mode_object *drm_mode_object_find(struct drm_device *dev,
+ 
+ 	mutex_lock(&dev->mode_config.idr_mutex);
+ 	obj = idr_find(&dev->mode_config.crtc_idr, id);
+-	if (!obj || (obj->type != type) || (obj->id != id))
++	if (!obj || (type != DRM_MODE_OBJECT_ANY && obj->type != type) ||
++	    (obj->id != id))
+ 		obj = NULL;
+ 	mutex_unlock(&dev->mode_config.idr_mutex);
+ 
+@@ -619,6 +620,8 @@ void drm_framebuffer_remove(struct drm_framebuffer *fb)
+ 				__drm_framebuffer_unreference(plane->fb);
+ 				plane->fb = NULL;
+ 				plane->crtc = NULL;
++
++				drm_plane_update_properties(plane);
+ 			}
+ 		}
+ 		drm_modeset_unlock_all(dev);
+@@ -1260,7 +1263,7 @@ static void drm_crtc_convert_to_umode(struct drm_mode_modeinfo *out,
+  * RETURNS:
+  * Zero on success, errno on failure.
+  */
+-static int drm_crtc_convert_umode(struct drm_display_mode *out,
++int drm_crtc_convert_umode(struct drm_display_mode *out,
+ 				  const struct drm_mode_modeinfo *in)
+ {
+ 	if (in->clock > INT_MAX || in->vrefresh > INT_MAX)
+@@ -1286,6 +1289,8 @@ static int drm_crtc_convert_umode(struct drm_display_mode *out,
+ 	return 0;
+ }
+ 
++EXPORT_SYMBOL(drm_crtc_convert_umode);
++
+ /**
+  * drm_mode_getresources - get graphics configuration
+  * @dev: drm device for the ioctl
+@@ -1859,6 +1864,7 @@ int drm_mode_setplane(struct drm_device *dev, void *data,
+ 		plane->crtc = NULL;
+ 		plane->fb = NULL;
+ 		drm_modeset_unlock_all(dev);
++		drm_plane_update_properties(plane);
+ 		goto out;
+ 	}
+ 
+@@ -1935,6 +1941,17 @@ int drm_mode_setplane(struct drm_device *dev, void *data,
+ 		old_fb = plane->fb;
+ 		plane->crtc = crtc;
+ 		plane->fb = fb;
++		plane->crtc_x = plane_req->crtc_x;
++		plane->crtc_y = plane_req->crtc_y;
++		plane->crtc_w = plane_req->crtc_w;
++		plane->crtc_h = plane_req->crtc_h;
++		plane->src_x = plane_req->src_x;
++		plane->src_y = plane_req->src_y;
++		plane->src_w = plane_req->src_w;
++		plane->src_h = plane_req->src_h;
++
++		drm_plane_update_properties(plane);
++	
+ 		fb = NULL;
+ 	}
+ 	drm_modeset_unlock_all(dev);
+@@ -2834,6 +2851,9 @@ EXPORT_SYMBOL(drm_property_add_enum);
+ void drm_property_destroy(struct drm_device *dev, struct drm_property *property)
+ {
+ 	struct drm_property_enum *prop_enum, *pt;
++	
++	if (!property)
++		return;
+ 
+ 	list_for_each_entry_safe(prop_enum, pt, &property->enum_blob_list, head) {
+ 		list_del(&prop_enum->head);
+@@ -3003,16 +3023,24 @@ done:
+ 	return ret;
+ }
+ 
+-static struct drm_property_blob *drm_property_create_blob(struct drm_device *dev, int length,
+-							  void *data)
++struct drm_property_blob *drm_property_create_blob(struct drm_device *dev,
++						  unsigned int length,
++						  unsigned int max_length,
++						  const void *data)
+ {
+ 	struct drm_property_blob *blob;
+ 	int ret;
+ 
+-	if (!length || !data)
++	 if (!!length != !!data)
++		return NULL;
++
++	if (max_length < length)
++		max_length = length;
++
++	if (max_length == 0)
+ 		return NULL;
+ 
+-	blob = kzalloc(sizeof(struct drm_property_blob)+length, GFP_KERNEL);
++	blob = kzalloc(sizeof(struct drm_property_blob)+max_length, GFP_KERNEL);
+ 	if (!blob)
+ 		return NULL;
+ 
+@@ -3022,21 +3050,44 @@ static struct drm_property_blob *drm_property_create_blob(struct drm_device *dev
+ 		return NULL;
+ 	}
+ 
++	blob->max_length = max_length;
+ 	blob->length = length;
+ 
+-	memcpy(blob->data, data, length);
++	if (length)
++		memcpy(blob->data, data, length);
+ 
+ 	list_add_tail(&blob->head, &dev->mode_config.property_blob_list);
+ 	return blob;
+ }
++EXPORT_SYMBOL(drm_property_create_blob);
++
++int drm_property_blob_replace_data(struct drm_property_blob *blob,
++				unsigned int length, const void *data)
++{
++	if (!!length != !!data)
++		return -EINVAL;
+ 
+-static void drm_property_destroy_blob(struct drm_device *dev,
++	if (length > blob->max_length)
++		return -ENOSPC;
++
++	blob->length = length;
++	if (length)
++		memcpy(blob->data, data, length);
++
++	return 0;
++}
++EXPORT_SYMBOL(drm_property_blob_replace_data);
++
++void drm_property_destroy_blob(struct drm_device *dev,
+ 			       struct drm_property_blob *blob)
+ {
++	if (!blob)
++		return;
+ 	drm_mode_object_put(dev, &blob->base);
+ 	list_del(&blob->head);
+ 	kfree(blob);
+ }
++EXPORT_SYMBOL(drm_property_destroy_blob);
+ 
+ int drm_mode_getblob_ioctl(struct drm_device *dev,
+ 			   void *data, struct drm_file *file_priv)
+@@ -3090,7 +3141,7 @@ int drm_mode_connector_update_edid_property(struct drm_connector *connector,
+ 
+ 	size = EDID_LENGTH * (1 + edid->extensions);
+ 	connector->edid_blob_ptr = drm_property_create_blob(connector->dev,
+-							    size, edid);
++							    size, 0, edid);
+ 	if (!connector->edid_blob_ptr)
+ 		return -EINVAL;
+ 
+@@ -3102,14 +3153,25 @@ int drm_mode_connector_update_edid_property(struct drm_connector *connector,
+ }
+ EXPORT_SYMBOL(drm_mode_connector_update_edid_property);
+ 
+-static bool drm_property_change_is_valid(struct drm_property *property,
++static bool range_property_is_signed(const struct drm_property *property)
++{
++	return property->values[0] > property->values[1];
++}
++
++static bool drm_property_change_is_valid(const struct drm_property *property,
+ 					 uint64_t value)
+ {
+ 	if (property->flags & DRM_MODE_PROP_IMMUTABLE)
+ 		return false;
+ 	if (property->flags & DRM_MODE_PROP_RANGE) {
+-		if (value < property->values[0] || value > property->values[1])
+-			return false;
++		if (range_property_is_signed(property)) {
++			if ((int64_t)value < (int64_t)property->values[0] ||
++			    (int64_t)value > (int64_t)property->values[1])
++				return false;
++		} else {
++			if (value < property->values[0] || value > property->values[1])
++				return false;
++		}
+ 		return true;
+ 	} else if (property->flags & DRM_MODE_PROP_BITMASK) {
+ 		int i;
+@@ -3129,6 +3191,19 @@ static bool drm_property_change_is_valid(struct drm_property *property,
+ 	}
+ }
+ 
++static bool object_has_prop(const struct drm_mode_object *obj, u32 prop_id)
++{
++	int i;
++
++	if (!obj->properties)
++		return false;
++
++	for (i = 0; i < obj->properties->count; i++)
++		if (obj->properties->ids[i] == prop_id)
++			return true;
++	return false;
++}
++
+ int drm_mode_connector_property_set_ioctl(struct drm_device *dev,
+ 				       void *data, struct drm_file *file_priv)
+ {
+@@ -3259,7 +3334,6 @@ int drm_mode_obj_set_property_ioctl(struct drm_device *dev, void *data,
+ 	struct drm_mode_object *prop_obj;
+ 	struct drm_property *property;
+ 	int ret = -EINVAL;
+-	int i;
+ 
+ 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
+ 		return -EINVAL;
+@@ -3272,11 +3346,7 @@ int drm_mode_obj_set_property_ioctl(struct drm_device *dev, void *data,
+ 	if (!arg_obj->properties)
+ 		goto out;
+ 
+-	for (i = 0; i < arg_obj->properties->count; i++)
+-		if (arg_obj->properties->ids[i] == arg->prop_id)
+-			break;
+-
+-	if (i == arg_obj->properties->count)
++	if (!object_has_prop(arg_obj, arg->prop_id))
+ 		goto out;
+ 
+ 	prop_obj = drm_mode_object_find(dev, arg->prop_id,
+@@ -3953,3 +4023,645 @@ void drm_mode_config_cleanup(struct drm_device *dev)
+ 	idr_destroy(&dev->mode_config.crtc_idr);
+ }
+ EXPORT_SYMBOL(drm_mode_config_cleanup);
++
++/**
++ * drm_region_adjust_size - adjust the size of the region
++ * @r: region to be adjusted
++ * @x: horizontal adjustment
++ * @y: vertical adjustment
++ *
++ * Change the size of region @r by @x in the horizontal direction,
++ * and by @y in the vertical direction, while keeping the center
++ * of @r stationary.
++ *
++ * Positive @x and @y increase the size, negative values decrease it.
++ */
++void drm_region_adjust_size(struct drm_region *r, int x, int y)
++{
++	r->x1 -= x >> 1;
++	r->y1 -= y >> 1;
++	r->x2 += (x + 1) >> 1;
++	r->y2 += (y + 1) >> 1;
++}
++EXPORT_SYMBOL(drm_region_adjust_size);
++
++/**
++ * drm_region_translate - translate the region
++ * @r: region to be tranlated
++ * @x: horizontal translation
++ * @y: vertical translation
++ *
++ * Move region @r by @x in the horizontal direction,
++ * and by @y in the vertical direction.
++ */
++void drm_region_translate(struct drm_region *r, int x, int y)
++{
++	r->x1 += x;
++	r->y1 += y;
++	r->x2 += x;
++	r->y2 += y;
++}
++EXPORT_SYMBOL(drm_region_translate);
++
++/**
++ * drm_region_subsample - subsample a region
++ * @r: region to be subsampled
++ * @hsub: horizontal subsampling factor
++ * @vsub: vertical subsampling factor
++ *
++ * Divide the coordinates of region @r by @hsub and @vsub.
++ */
++void drm_region_subsample(struct drm_region *r, int hsub, int vsub)
++{
++	r->x1 /= hsub;
++	r->y1 /= vsub;
++	r->x2 /= hsub;
++	r->y2 /= vsub;
++}
++EXPORT_SYMBOL(drm_region_subsample);
++
++/**
++ * drm_region_width - determine the region width
++ * @r: region whose width is returned
++ *
++ * RETURNS:
++ * The width of the region.
++ */
++int drm_region_width(const struct drm_region *r)
++{
++	return r->x2 - r->x1;
++}
++EXPORT_SYMBOL(drm_region_width);
++
++/**
++ * drm_region_height - determine the region height
++ * @r: region whose height is returned
++ *
++ * RETURNS:
++ * The height of the region.
++ */
++int drm_region_height(const struct drm_region *r)
++{
++	return r->y2 - r->y1;
++}
++EXPORT_SYMBOL(drm_region_height);
++
++/**
++ * drm_region_visible - determine if the the region is visible
++ * @r: region whose visibility is returned
++ *
++ * RETURNS:
++ * @true if the region is visible, @false otherwise.
++ */
++bool drm_region_visible(const struct drm_region *r)
++{
++	return drm_region_width(r) > 0 && drm_region_height(r) > 0;
++}
++EXPORT_SYMBOL(drm_region_visible);
++
++/**
++ * drm_region_clip - clip one region by another region
++ * @r: region to be clipped
++ * @clip: clip region
++ *
++ * Clip region @r by region @clip.
++ *
++ * RETURNS:
++ * @true if the region is still visible after being clipped,
++ * @false otherwise.
++ */
++bool drm_region_clip(struct drm_region *r, const struct drm_region *clip)
++{
++	r->x1 = max(r->x1, clip->x1);
++	r->y1 = max(r->y1, clip->y1);
++	r->x2 = min(r->x2, clip->x2);
++	r->y2 = min(r->y2, clip->y2);
++
++	return drm_region_visible(r);
++}
++EXPORT_SYMBOL(drm_region_clip);
++
++/**
++ * drm_region_clip_scaled - perform a scaled clip operation
++ * @src: source window region
++ * @dst: destination window region
++ * @clip: clip region
++ * @hscale: horizontal scaling factor
++ * @vscale: vertical scaling factor
++ *
++ * Clip region @dst by region @clip. Clip region @src by the same
++ * amounts multiplied by @hscale and @vscale.
++ *
++ * RETUTRNS:
++ * @true if region @dst is still visible after being clipped,
++ * @false otherwise
++ */
++bool drm_region_clip_scaled(struct drm_region *src, struct drm_region *dst,
++			    const struct drm_region *clip,
++			    int hscale, int vscale)
++{
++	int diff;
++
++	diff = clip->x1 - dst->x1;
++	if (diff > 0)
++		src->x1 += diff * hscale;
++	diff = clip->y1 - dst->y1;
++	if (diff > 0)
++		src->y1 += diff * vscale;
++	diff = dst->x2 - clip->x2;
++	if (diff > 0)
++		src->x2 -= diff * hscale;
++	diff = dst->y2 - clip->y2;
++	if (diff > 0)
++		src->y2 -= diff * vscale;
++
++	return drm_region_clip(dst, clip);
++}
++EXPORT_SYMBOL(drm_region_clip_scaled);
++
++/**
++ * drm_calc_hscale - calculate the horizontal scaling factor
++ * @src: source window region
++ * @dst: destination window region
++ * @min_hscale: minimum allowed horizontal scaling factor
++ * @max_hscale: maximum allowed horizontal scaling factor
++ *
++ * Calculate the horizontal scaling factor as
++ * (@src width) / (@dst width).
++ *
++ * If the calculated scaling factor is below @min_hscale,
++ * decrease the width of region @dst to compensate.
++ *
++ * If the calculcated scaling factor is above @max_hscale,
++ * decrease the width of region @src to compensate.
++ *
++ * RETURNS:
++ * The horizontal scaling factor.
++ */
++int drm_calc_hscale(struct drm_region *src, struct drm_region *dst,
++		    int min_hscale, int max_hscale)
++{
++	int src_w = drm_region_width(src);
++	int dst_w = drm_region_width(dst);
++	int hscale;
++
++	if (dst_w <= 0)
++		return 0;
++
++	hscale = src_w / dst_w;
++
++	if (hscale < min_hscale) {
++		int max_dst_w = src_w / min_hscale;
++
++		drm_region_adjust_size(dst, max_dst_w - dst_w, 0);
++
++		return min_hscale;
++	}
++
++	if (hscale > max_hscale) {
++		int max_src_w = dst_w * max_hscale;
++
++		drm_region_adjust_size(src, max_src_w - src_w, 0);
++
++		return max_hscale;
++	}
++
++	return hscale;
++}
++EXPORT_SYMBOL(drm_calc_hscale);
++
++/**
++ * drm_calc_vscale - calculate the vertical scaling factor
++ * @src: source window region
++ * @dst: destination window region
++ * @min_vscale: minimum allowed vertical scaling factor
++ * @max_vscale: maximum allowed vertical scaling factor
++ *
++ * Calculate the vertical scaling factor as
++ * (@src height) / (@dst height).
++ *
++ * If the calculated scaling factor is below @min_vscale,
++ * decrease the height of region @dst to compensate.
++ *
++ * If the calculcated scaling factor is above @max_vscale,
++ * decrease the height of region @src to compensate.
++ *
++ * RETURNS:
++ * The vertical scaling factor.
++ */
++int drm_calc_vscale(struct drm_region *src, struct drm_region *dst,
++		    int min_vscale, int max_vscale)
++{
++	int src_h = drm_region_height(src);
++	int dst_h = drm_region_height(dst);
++	int vscale;
++
++	if (dst_h <= 0)
++		return 0;
++
++	vscale = src_h / dst_h;
++
++	if (vscale < min_vscale) {
++		int max_dst_h = src_h / min_vscale;
++
++		drm_region_adjust_size(dst, 0, max_dst_h - dst_h);
++
++		return min_vscale;
++	}
++
++	if (vscale > max_vscale) {
++		int max_src_h = dst_h * max_vscale;
++
++		drm_region_adjust_size(src, 0, max_src_h - src_h);
++
++		return max_vscale;
++	}
++
++	return vscale;
++}
++EXPORT_SYMBOL(drm_calc_vscale);
++
++static void drm_crtc_update_connector_ids_property(struct drm_crtc *crtc)
++{
++	struct drm_mode_config *config = &crtc->dev->mode_config;
++	struct drm_connector *connector;
++	uint64_t value = 0;
++	int i = 0;
++	uint32_t connector_ids[config->num_connector];
++
++	list_for_each_entry(connector, &config->connector_list, head) {
++		if (connector->encoder && connector->encoder->crtc == crtc)
++			connector_ids[i++] = connector->base.id;
++	}
++
++	if (crtc->connector_ids_blob) {
++		if (i) {
++			drm_property_blob_replace_data(crtc->connector_ids_blob,
++					i * sizeof connector_ids[0], connector_ids);
++			value = crtc->connector_ids_blob->base.id;
++		} else
++			drm_property_blob_replace_data(crtc->connector_ids_blob, 0, NULL);
++
++	}
++	drm_object_property_set_value(&crtc->base, config->connector_ids_prop, value);
++}
++
++static void drm_crtc_update_mode_property(struct drm_crtc *crtc)
++{
++	struct drm_mode_config *config = &crtc->dev->mode_config;
++	uint64_t value = 0;
++
++	if (crtc->mode_blob){
++		if (crtc->enabled) {
++			struct drm_mode_modeinfo umode;
++
++			drm_crtc_convert_to_umode(&umode, &crtc->mode);
++			drm_property_blob_replace_data(crtc->mode_blob, sizeof umode, &umode);
++			value = crtc->mode_blob->base.id;
++		} else
++			drm_property_blob_replace_data(crtc->mode_blob, 0, NULL);
++	}
++
++	drm_object_property_set_value(&crtc->base, config->mode_prop, value);
++}
++
++void drm_crtc_update_properties(struct drm_crtc *crtc)
++{
++	struct drm_mode_object *obj = &crtc->base;
++	struct drm_mode_config *config = &crtc->dev->mode_config;
++
++	drm_object_property_set_value(obj, config->src_x_prop, crtc->x);
++	drm_object_property_set_value(obj, config->src_y_prop, crtc->y);
++	drm_object_property_set_value(obj, config->fb_id_prop, crtc->fb ? crtc->fb->base.id : 0);
++
++	drm_crtc_update_mode_property(crtc);
++	drm_crtc_update_connector_ids_property(crtc);
++}
++EXPORT_SYMBOL(drm_crtc_update_properties);
++
++void drm_plane_update_properties(struct drm_plane *plane)
++{
++	struct drm_mode_object *obj = &plane->base;
++	struct drm_mode_config *config = &plane->dev->mode_config;
++
++	drm_object_property_set_value(obj, config->src_x_prop, plane->src_x);
++	drm_object_property_set_value(obj, config->src_y_prop, plane->src_y);
++	drm_object_property_set_value(obj, config->src_w_prop, plane->src_w);
++	drm_object_property_set_value(obj, config->src_h_prop, plane->src_h);
++
++	drm_object_property_set_value(obj, config->crtc_x_prop, plane->crtc_x);
++	drm_object_property_set_value(obj, config->crtc_y_prop, plane->crtc_y);
++	drm_object_property_set_value(obj, config->crtc_w_prop, plane->crtc_w);
++	drm_object_property_set_value(obj, config->crtc_h_prop, plane->crtc_h);
++
++	drm_object_property_set_value(obj, config->fb_id_prop, plane->fb ? plane->fb->base.id : 0);
++	drm_object_property_set_value(obj, config->crtc_id_prop, plane->crtc ? plane->crtc->base.id : 0);
++}
++EXPORT_SYMBOL(drm_plane_update_properties);
++
++int drm_crtc_create_blobs(struct drm_crtc *crtc)
++{
++	struct drm_device *dev = crtc->dev;
++
++	crtc->mode_blob = drm_property_create_blob(dev, 0, sizeof(struct drm_mode_modeinfo), NULL);
++	if (!crtc->mode_blob)
++		return -ENOMEM;
++
++	crtc->connector_ids_blob = drm_property_create_blob(dev, 0, dev->mode_config.num_connector * sizeof(uint32_t), NULL);
++	if (!crtc->connector_ids_blob)
++		return -ENOMEM;
++
++	return 0;
++}
++EXPORT_SYMBOL(drm_crtc_create_blobs);
++
++void drm_crtc_destroy_blobs(struct drm_crtc *crtc)
++{
++	struct drm_device *dev = crtc->dev;
++
++	drm_property_destroy_blob(dev, crtc->mode_blob);
++	drm_property_destroy_blob(dev, crtc->connector_ids_blob);
++}
++EXPORT_SYMBOL(drm_crtc_destroy_blobs);
++
++static void drm_property_destroy_null(struct drm_device *dev, struct drm_property **prop)
++{
++	drm_property_destroy(dev, *prop);
++	*prop = NULL;
++}
++
++void drm_mode_destroy_properties(struct drm_device *dev)
++{
++	struct drm_mode_config *config = &dev->mode_config;
++
++	drm_property_destroy_null(dev, &config->cursor_h_prop);
++	drm_property_destroy_null(dev, &config->cursor_w_prop);
++	drm_property_destroy_null(dev, &config->cursor_y_prop);
++	drm_property_destroy_null(dev, &config->cursor_x_prop);
++	drm_property_destroy_null(dev, &config->cursor_id_prop);
++
++	drm_property_destroy_null(dev, &config->connector_ids_prop);
++	drm_property_destroy_null(dev, &config->mode_prop);
++
++	drm_property_destroy_null(dev, &config->crtc_id_prop);
++	drm_property_destroy_null(dev, &config->fb_id_prop);
++
++	drm_property_destroy_null(dev, &config->crtc_h_prop);
++	drm_property_destroy_null(dev, &config->crtc_w_prop);
++	drm_property_destroy_null(dev, &config->crtc_y_prop);
++	drm_property_destroy_null(dev, &config->crtc_x_prop);
++
++	drm_property_destroy_null(dev, &config->src_h_prop);
++	drm_property_destroy_null(dev, &config->src_w_prop);
++	drm_property_destroy_null(dev, &config->src_y_prop);
++	drm_property_destroy_null(dev, &config->src_x_prop);
++}
++EXPORT_SYMBOL(drm_mode_destroy_properties);
++
++int drm_mode_create_properties(struct drm_device *dev)
++{
++	struct drm_mode_config *config = &dev->mode_config;
++
++	config->src_x_prop = drm_property_create_range(dev, 0, "SRC_X", 0, UINT_MAX);
++	if (!config->src_x_prop)
++		goto out;
++	config->src_y_prop = drm_property_create_range(dev, 0, "SRC_Y", 0, UINT_MAX);
++	if (!config->src_y_prop)
++		goto out;
++	config->src_w_prop = drm_property_create_range(dev, 0, "SRC_W", 0, UINT_MAX);
++	if (!config->src_w_prop)
++		goto out;
++	config->src_h_prop = drm_property_create_range(dev, 0, "SRC_H", 0, UINT_MAX);
++	if (!config->src_h_prop)
++		goto out;
++
++	config->crtc_x_prop = drm_property_create_range(dev, 0, "CRTC_X", INT_MIN, INT_MAX);
++	if (!config->crtc_x_prop)
++		goto out;
++	config->crtc_y_prop = drm_property_create_range(dev, 0, "CRTC_Y", INT_MIN, INT_MAX);
++	if (!config->crtc_y_prop)
++		goto out;
++	config->crtc_w_prop = drm_property_create_range(dev, 0, "CRTC_W", 0, UINT_MAX);
++	if (!config->crtc_w_prop)
++		goto out;
++	config->crtc_h_prop = drm_property_create_range(dev, 0, "CRTC_H", 0, UINT_MAX);
++	if (!config->crtc_h_prop)
++		goto out;
++
++	config->fb_id_prop = drm_property_create_range(dev, 0, "FB_ID", 0, UINT_MAX);
++	if (!config->fb_id_prop)
++		goto out;
++	config->crtc_id_prop = drm_property_create_range(dev, 0, "CRTC_ID", 0, UINT_MAX);
++	if (!config->crtc_id_prop)
++		goto out;
++
++	config->cursor_id_prop = drm_property_create_range(dev, 0, "CURSOR_ID", 0, UINT_MAX);
++	if (!config->cursor_id_prop)
++		goto out;
++	config->cursor_x_prop = drm_property_create_range(dev, 0, "CURSOR_X", INT_MIN, INT_MAX);
++	if (!config->cursor_x_prop)
++		goto out;
++	config->cursor_y_prop = drm_property_create_range(dev, 0, "CURSOR_Y", INT_MIN, INT_MAX);
++	if (!config->cursor_y_prop)
++		goto out;
++	config->cursor_w_prop = drm_property_create_range(dev, 0, "CURSOR_W", 0, UINT_MAX);
++	if (!config->cursor_w_prop)
++		goto out;
++	config->cursor_h_prop = drm_property_create_range(dev, 0, "CURSOR_H", 0, UINT_MAX);
++	if (!config->cursor_h_prop)
++		goto out;
++
++	/* FIXME create special object ID list property type? */
++	config->connector_ids_prop = drm_property_create(dev, DRM_MODE_PROP_BLOB, "CONNECTOR_IDS", 0);
++	if (!config->connector_ids_prop)
++		goto out;
++
++	config->mode_prop = drm_property_create(dev, DRM_MODE_PROP_BLOB, "MODE", 0);
++	if (!config->mode_prop)
++		goto out;
++
++	return 0;
++
++ out:
++	drm_mode_destroy_properties(dev);
++
++	return -ENOMEM; /* FIXME? */
++}
++EXPORT_SYMBOL(drm_mode_create_properties);
++
++void drm_plane_attach_properties(struct drm_plane *plane)
++{
++	struct drm_mode_object *obj = &plane->base;
++	struct drm_mode_config *config = &plane->dev->mode_config;
++
++	drm_object_attach_property(obj, config->src_x_prop, 0);
++	drm_object_attach_property(obj, config->src_y_prop, 0);
++	drm_object_attach_property(obj, config->src_w_prop, 0);
++	drm_object_attach_property(obj, config->src_h_prop, 0);
++	drm_object_attach_property(obj, config->crtc_x_prop, 0);
++	drm_object_attach_property(obj, config->crtc_y_prop, 0);
++	drm_object_attach_property(obj, config->crtc_w_prop, 0);
++	drm_object_attach_property(obj, config->crtc_h_prop, 0);
++	drm_object_attach_property(obj, config->fb_id_prop, 0);
++	drm_object_attach_property(obj, config->crtc_id_prop, 0);
++}
++EXPORT_SYMBOL(drm_plane_attach_properties);
++
++void drm_crtc_attach_properties(struct drm_crtc *crtc)
++{
++	struct drm_mode_object *obj = &crtc->base;
++	struct drm_mode_config *config = &crtc->dev->mode_config;
++
++	drm_object_attach_property(obj, config->src_x_prop, 0);
++	drm_object_attach_property(obj, config->src_y_prop, 0);
++	drm_object_attach_property(obj, config->fb_id_prop, 0);
++	drm_object_attach_property(obj, config->mode_prop, 0);
++	drm_object_attach_property(obj, config->connector_ids_prop, 0);
++}
++EXPORT_SYMBOL(drm_crtc_attach_properties);
++
++int drm_mode_atomic_ioctl(struct drm_device *dev,
++			  void *data, struct drm_file *file_priv)
++{
++	struct drm_mode_atomic *arg = data;
++	uint32_t __user *objs_ptr = (uint32_t __user *)(unsigned long)(arg->objs_ptr);
++	uint32_t __user *count_props_ptr = (uint32_t __user *)(unsigned long)(arg->count_props_ptr);
++	uint32_t __user *props_ptr = (uint32_t __user *)(unsigned long)(arg->props_ptr);
++	uint64_t __user *prop_values_ptr = (uint64_t __user *)(unsigned long)(arg->prop_values_ptr);
++	uint64_t __user *blob_values_ptr = (uint64_t __user *)(unsigned long)(arg->blob_values_ptr);
++	unsigned int copied_objs = 0;
++	unsigned int copied_props = 0;
++	unsigned int copied_blobs = 0;
++	void *state;
++	int ret = 0;
++	unsigned int i, j;
++
++	if (!dev->driver->atomic_funcs ||
++	    !dev->driver->atomic_funcs->begin ||
++	    !dev->driver->atomic_funcs->set ||
++	    !dev->driver->atomic_funcs->check ||
++	    !dev->driver->atomic_funcs->commit ||
++	    !dev->driver->atomic_funcs->end)
++		return -ENOSYS;
++
++	if (arg->flags & ~(DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_EVENT | DRM_MODE_ATOMIC_NONBLOCK))
++		return -EINVAL;
++
++	/* can't test and expect an event at the same time. */
++	if (arg->flags & DRM_MODE_ATOMIC_TEST_ONLY && arg->flags & DRM_MODE_ATOMIC_EVENT)
++		return -EINVAL;
++
++	mutex_lock(&dev->mode_config.mutex);
++
++	state = dev->driver->atomic_funcs->begin(dev, file_priv, arg->flags, arg->user_data);
++	if (IS_ERR(state)) {
++		ret = PTR_ERR(state);
++		goto unlock;
++	}
++
++	for (i = 0; i < arg->count_objs; i++) {
++		uint32_t obj_id, count_props;
++		struct drm_mode_object *obj;
++
++		if (get_user(obj_id, objs_ptr + copied_objs)) {
++			ret = -EFAULT;
++			goto out;
++		}
++
++		obj = drm_mode_object_find(dev, obj_id, DRM_MODE_OBJECT_ANY);
++		if (!obj || !obj->properties) {
++			ret = -ENOENT;
++			goto out;
++		}
++
++		if (get_user(count_props, count_props_ptr + copied_objs)) {
++			ret = -EFAULT;
++			goto out;
++		}
++
++		copied_objs++;
++
++		for (j = 0; j < count_props; j++) {
++			uint32_t prop_id;
++			uint64_t prop_value;
++			struct drm_mode_object *prop_obj;
++			struct drm_property *prop;
++			void *blob_data = NULL;
++
++			if (get_user(prop_id, props_ptr + copied_props)) {
++				ret = -EFAULT;
++				goto out;
++			}
++
++			if (!object_has_prop(obj, prop_id)) {
++				ret = -EINVAL;
++				goto out;
++			}
++
++			prop_obj = drm_mode_object_find(dev, prop_id, DRM_MODE_OBJECT_PROPERTY);
++			if (!prop_obj) {
++				ret = -ENOENT;
++				goto out;
++			}
++			prop = obj_to_property(prop_obj);
++
++			if (get_user(prop_value, prop_values_ptr + copied_props)) {
++				ret = -EFAULT;
++				goto out;
++			}
++
++			if (!drm_property_change_is_valid(prop, prop_value)) {
++				ret = -EINVAL;
++				goto out;
++			}
++
++			if (prop->flags & DRM_MODE_PROP_BLOB && prop_value) {
++				uint64_t blob_ptr;
++
++				if (get_user(blob_ptr, blob_values_ptr + copied_blobs)) {
++					ret = -EFAULT;
++					goto out;
++				}
++
++				blob_data = kmalloc(prop_value, GFP_KERNEL);
++				if (!blob_data) {
++					ret = -ENOMEM;
++					goto out;
++				}
++
++				if (copy_from_user(blob_data, (void __user *)(unsigned long)blob_ptr, prop_value)) {
++					kfree(blob_data);
++					ret = -EFAULT;
++					goto out;
++				}
++			}
++
++			/* User space sends the blob pointer even if we don't use it (length==0). */
++			if (prop->flags & DRM_MODE_PROP_BLOB)
++				copied_blobs++;
++
++			/* The driver will be in charge of blob_data from now on. */
++			ret = dev->driver->atomic_funcs->set(dev, state, obj, prop, prop_value, blob_data);
++			if (ret)
++				goto out;
++
++			copied_props++;
++		}
++	}
++
++	ret = dev->driver->atomic_funcs->check(dev, state);
++	if (ret)
++		goto out;
++
++	if (arg->flags & DRM_MODE_ATOMIC_TEST_ONLY)
++		goto out;
++
++	ret = dev->driver->atomic_funcs->commit(dev, state);
++
++ out:
++	dev->driver->atomic_funcs->end(dev, state);
++ unlock:
++	mutex_unlock(&dev->mode_config.mutex);
++
++	return ret;
++}
+diff --git a/drivers/gpu/drm/drm_crtc_helper.c b/drivers/gpu/drm/drm_crtc_helper.c
+index 914f537..bd92043 100644
+--- a/drivers/gpu/drm/drm_crtc_helper.c
++++ b/drivers/gpu/drm/drm_crtc_helper.c
+@@ -795,6 +795,11 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
+ 	kfree(save_connectors);
+ 	kfree(save_encoders);
+ 	kfree(save_crtcs);
++
++	/* changes in one CRTC can affect the others */
++	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head)
++	drm_crtc_update_properties(crtc);
++
+ 	return 0;
+ 
+ fail:
+@@ -823,6 +828,10 @@ fail:
+ 	kfree(save_connectors);
+ 	kfree(save_encoders);
+ 	kfree(save_crtcs);
++
++	/* changes in one CRTC can affect the others */
++	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head)
++		drm_crtc_update_properties(crtc);
+ 	return ret;
+ }
+ EXPORT_SYMBOL(drm_crtc_helper_set_config);
+diff --git a/drivers/gpu/drm/drm_drv.c b/drivers/gpu/drm/drm_drv.c
+index 8c46216..b1771ba 100644
+--- a/drivers/gpu/drm/drm_drv.c
++++ b/drivers/gpu/drm/drm_drv.c
+@@ -166,6 +166,7 @@ static const struct drm_ioctl_desc drm_ioctls[] = {
+ 	DRM_IOCTL_DEF(DRM_IOCTL_MODE_DESTROY_DUMB, drm_mode_destroy_dumb_ioctl, DRM_CONTROL_ALLOW|DRM_UNLOCKED),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_MODE_OBJ_GETPROPERTIES, drm_mode_obj_get_properties_ioctl, DRM_CONTROL_ALLOW|DRM_UNLOCKED),
+ 	DRM_IOCTL_DEF(DRM_IOCTL_MODE_OBJ_SETPROPERTY, drm_mode_obj_set_property_ioctl, DRM_MASTER|DRM_CONTROL_ALLOW|DRM_UNLOCKED),
++	DRM_IOCTL_DEF(DRM_IOCTL_MODE_ATOMIC, drm_mode_atomic_ioctl, DRM_MASTER|DRM_CONTROL_ALLOW|DRM_UNLOCKED),
+ };
+ 
+ #define DRM_CORE_IOCTL_COUNT	ARRAY_SIZE( drm_ioctls )
+diff --git a/drivers/gpu/drm/drm_flip.c b/drivers/gpu/drm/drm_flip.c
+new file mode 100644
+index 0000000..a20e6a4
+--- /dev/null
++++ b/drivers/gpu/drm/drm_flip.c
+@@ -0,0 +1,387 @@
++/*
++ * Copyright (C) 2012 Intel Corporation
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ *
++ * Authors:
++ * Ville Syrjälä <ville.syrjala@linux.intel.com>
++ */
++
++#include <linux/export.h>
++#include <drm/drm_flip.h>
++
++static void drm_flip_driver_cleanup(struct work_struct *work)
++{
++	struct drm_flip *flip, *next;
++	struct drm_flip_driver *driver =
++		container_of(work, struct drm_flip_driver, cleanup_work);
++	LIST_HEAD(list);
++
++	spin_lock_irq(&driver->lock);
++
++	list_cut_position(&list,
++			  &driver->cleanup_list,
++			  driver->cleanup_list.prev);
++
++	spin_unlock_irq(&driver->lock);
++
++	if (list_empty(&list))
++		return;
++
++	list_for_each_entry_safe(flip, next, &list, list) {
++		struct drm_flip_helper *helper = flip->helper;
++
++		WARN_ON(!flip->finished);
++
++		helper->funcs->cleanup(flip);
++	}
++}
++
++static void drm_flip_driver_finish(struct work_struct *work)
++{
++	struct drm_flip *flip, *next;
++	struct drm_flip_driver *driver =
++		container_of(work, struct drm_flip_driver, finish_work);
++	LIST_HEAD(list);
++	bool need_cleanup = false;
++
++	spin_lock_irq(&driver->lock);
++
++	list_cut_position(&list,
++			  &driver->finish_list,
++			  driver->finish_list.prev);
++
++	spin_unlock_irq(&driver->lock);
++
++	if (list_empty(&list))
++		return;
++
++	list_for_each_entry_safe(flip, next, &list, list) {
++		struct drm_flip_helper *helper = flip->helper;
++
++		helper->funcs->finish(flip);
++
++		spin_lock_irq(&driver->lock);
++
++		flip->finished = true;
++
++		/*
++		 * It's possible that drm_flip_set_scanout() was called after we
++		 * pulled this flip from finish_list, in which case the flip
++		 * could be in need of cleanup, but not on cleanup_list.
++		 */
++		if (flip == helper->scanout_flip) {
++			list_del_init(&flip->list);
++		} else {
++			need_cleanup = true;
++			list_move_tail(&flip->list, &driver->cleanup_list);
++		}
++
++		spin_unlock_irq(&driver->lock);
++	}
++
++	if (need_cleanup)
++		queue_work(driver->wq, &driver->cleanup_work);
++}
++
++static bool drm_flip_set_scanout(struct drm_flip_helper *helper,
++				 struct drm_flip *flip)
++{
++	struct drm_flip_driver *driver = helper->driver;
++	struct drm_flip *old = helper->scanout_flip;
++
++	helper->scanout_flip = flip;
++
++	if (old && old->finished)
++		list_move_tail(&old->list, &driver->cleanup_list);
++
++	return old != NULL;
++}
++
++static bool drm_flip_complete(struct drm_flip *flip)
++{
++	struct drm_flip_helper *helper = flip->helper;
++	struct drm_flip_driver *driver = helper->driver;
++	bool need_cleanup = false;
++
++	helper->funcs->complete(flip);
++
++	if (flip->flipped) {
++		if (drm_flip_set_scanout(helper, flip))
++			need_cleanup = true;
++	}
++
++	list_add_tail(&flip->list, &driver->finish_list);
++
++	return need_cleanup;
++}
++
++void drm_flip_helper_init(struct drm_flip_helper *helper,
++			  struct drm_flip_driver *driver,
++			  const struct drm_flip_helper_funcs *funcs)
++{
++	helper->pending_flip = NULL;
++	helper->scanout_flip = NULL;
++	helper->driver = driver;
++	helper->funcs = funcs;
++}
++EXPORT_SYMBOL(drm_flip_helper_init);
++
++void drm_flip_helper_clear(struct drm_flip_helper *helper)
++{
++	unsigned long flags;
++	struct drm_flip_driver *driver = helper->driver;
++	struct drm_flip *pending_flip;
++	bool need_finish = false;
++	bool need_cleanup = false;
++
++	spin_lock_irqsave(&driver->lock, flags);
++
++	pending_flip = helper->pending_flip;
++
++	if (pending_flip) {
++		BUG_ON(pending_flip->helper != helper);
++
++		need_finish = true;
++
++		if (drm_flip_complete(pending_flip))
++			need_cleanup = true;
++
++		helper->pending_flip = NULL;
++	}
++
++	if (drm_flip_set_scanout(helper, NULL))
++		need_cleanup = true;
++
++	spin_unlock_irqrestore(&driver->lock, flags);
++
++	if (need_finish)
++		queue_work(driver->wq, &driver->finish_work);
++
++	if (need_cleanup)
++		queue_work(driver->wq, &driver->cleanup_work);
++}
++EXPORT_SYMBOL(drm_flip_helper_clear);
++
++void drm_flip_helper_fini(struct drm_flip_helper *helper)
++{
++	struct drm_flip_driver *driver = helper->driver;
++
++	drm_flip_helper_clear(helper);
++
++	flush_work_sync(&driver->finish_work);
++	flush_work_sync(&driver->cleanup_work);
++}
++EXPORT_SYMBOL(drm_flip_helper_fini);
++
++void drm_flip_helper_vblank(struct drm_flip_helper *helper)
++{
++	struct drm_flip_driver *driver = helper->driver;
++	struct drm_flip *pending_flip;
++	unsigned long flags;
++	bool need_finish = false;
++	bool need_cleanup = false;
++
++	spin_lock_irqsave(&driver->lock, flags);
++
++	pending_flip = helper->pending_flip;
++
++	if (pending_flip) {
++		BUG_ON(pending_flip->helper != helper);
++
++		if (helper->funcs->vblank(pending_flip))
++			pending_flip->flipped = true;
++
++		if (pending_flip->flipped) {
++			need_finish = true;
++
++			if (drm_flip_complete(pending_flip))
++				need_cleanup = true;
++
++			helper->pending_flip = NULL;
++		}
++	}
++
++	spin_unlock_irqrestore(&driver->lock, flags);
++
++	if (need_finish)
++		queue_work(driver->wq, &driver->finish_work);
++
++	if (need_cleanup)
++		queue_work(driver->wq, &driver->cleanup_work);
++}
++EXPORT_SYMBOL(drm_flip_helper_vblank);
++
++void drm_flip_driver_init(struct drm_flip_driver *driver,
++			  const struct drm_flip_driver_funcs *funcs)
++{
++	spin_lock_init(&driver->lock);
++
++	INIT_LIST_HEAD(&driver->finish_list);
++	INIT_LIST_HEAD(&driver->cleanup_list);
++
++	INIT_WORK(&driver->finish_work, drm_flip_driver_finish);
++	INIT_WORK(&driver->cleanup_work, drm_flip_driver_cleanup);
++
++	driver->funcs = funcs;
++
++	driver->wq = create_singlethread_workqueue("drm_flip");
++}
++EXPORT_SYMBOL(drm_flip_driver_init);
++
++void drm_flip_driver_fini(struct drm_flip_driver *driver)
++{
++	destroy_workqueue(driver->wq);
++
++	/* All the scheduled flips should be cleaned up by now. */
++	WARN_ON(!list_empty(&driver->finish_list));
++	WARN_ON(!list_empty(&driver->cleanup_list));
++}
++EXPORT_SYMBOL(drm_flip_driver_fini);
++
++void drm_flip_driver_schedule_flips(struct drm_flip_driver *driver,
++				    struct list_head *flips)
++{
++	unsigned long flags;
++	struct drm_flip *flip, *next;
++	bool need_finish = false;
++	bool need_cleanup = false;
++
++	spin_lock_irqsave(&driver->lock, flags);
++
++	list_for_each_entry(flip, flips, list) {
++		struct drm_flip_helper *helper = flip->helper;
++		struct drm_flip *pending_flip = helper->pending_flip;
++
++		if (helper->funcs->flip(flip, pending_flip))
++			pending_flip->flipped = true;
++	}
++
++	if (driver->funcs->flush)
++		driver->funcs->flush(driver);
++
++	/* Complete all flips that got overridden */
++	list_for_each_entry_safe(flip, next, flips, list) {
++		struct drm_flip_helper *helper = flip->helper;
++		struct drm_flip *pending_flip = helper->pending_flip;
++
++		BUG_ON(helper->driver != driver);
++
++		if (pending_flip) {
++			BUG_ON(pending_flip->helper != helper);
++
++			need_finish = true;
++
++			if (drm_flip_complete(pending_flip))
++				need_cleanup = true;
++		}
++
++		list_del_init(&flip->list);
++		helper->pending_flip = flip;
++	}
++
++	spin_unlock_irqrestore(&driver->lock, flags);
++
++	if (need_finish)
++		queue_work(driver->wq, &driver->finish_work);
++
++	if (need_cleanup)
++		queue_work(driver->wq, &driver->cleanup_work);
++}
++EXPORT_SYMBOL(drm_flip_driver_schedule_flips);
++
++void drm_flip_driver_prepare_flips(struct drm_flip_driver *driver,
++				   struct list_head *flips)
++{
++	struct drm_flip *flip;
++
++	list_for_each_entry(flip, flips, list) {
++		struct drm_flip_helper *helper = flip->helper;
++
++		if (helper->funcs->prepare)
++			helper->funcs->prepare(flip);
++	}
++}
++EXPORT_SYMBOL(drm_flip_driver_prepare_flips);
++
++void drm_flip_driver_complete_flips(struct drm_flip_driver *driver,
++				    struct list_head *flips)
++{
++	unsigned long flags;
++	struct drm_flip *flip, *next;
++	bool need_finish = false;
++	bool need_cleanup = false;
++
++	spin_lock_irqsave(&driver->lock, flags);
++
++	/* first complete all pending flips */
++	list_for_each_entry(flip, flips, list) {
++		struct drm_flip_helper *helper = flip->helper;
++		struct drm_flip *pending_flip = helper->pending_flip;
++
++		BUG_ON(helper->driver != driver);
++
++		if (pending_flip) {
++			BUG_ON(pending_flip->helper != helper);
++
++			need_finish = true;
++
++			if (drm_flip_complete(pending_flip))
++				need_cleanup = true;
++
++			helper->pending_flip = NULL;
++		}
++	}
++
++	/* then complete all new flips as well */
++	list_for_each_entry_safe(flip, next, flips, list) {
++		list_del_init(&flip->list);
++
++		/*
++		 * This is the flip that gets scanned out
++		 * next time the hardware is fired up.
++		 */
++		flip->flipped = true;
++
++		need_finish = true;
++
++		if (drm_flip_complete(flip))
++			need_cleanup = true;
++	}
++
++	spin_unlock_irqrestore(&driver->lock, flags);
++
++	if (need_finish)
++		queue_work(driver->wq, &driver->finish_work);
++
++	if (need_cleanup)
++		queue_work(driver->wq, &driver->cleanup_work);
++}
++EXPORT_SYMBOL(drm_flip_driver_complete_flips);
++
++void drm_flip_init(struct drm_flip *flip,
++		   struct drm_flip_helper *helper)
++{
++	flip->helper = helper;
++	flip->flipped = false;
++	flip->finished = false;
++	INIT_LIST_HEAD(&flip->list);
++}
++EXPORT_SYMBOL(drm_flip_init);
+diff --git a/include/drm/drmP.h b/include/drm/drmP.h
+index f50f394..2d08637 100644
+--- a/include/drm/drmP.h
++++ b/include/drm/drmP.h
+@@ -991,6 +991,8 @@ struct drm_driver {
+ 
+ 	/* List of devices hanging off this driver */
+ 	struct list_head device_list;
++
++	const struct drm_atomic_funcs *atomic_funcs;
+ };
+ 
+ #define DRM_MINOR_UNASSIGNED 0
+@@ -1084,6 +1086,12 @@ struct drm_pending_vblank_event {
+ 	struct drm_event_vblank event;
+ };
+ 
++struct drm_pending_atomic_event {
++	struct drm_pending_event base;
++	int pipe;
++	struct drm_event_atomic event;
++};
++
+ struct drm_vblank_crtc {
+ 	wait_queue_head_t queue;	/**< VBLANK wait queue */
+ 	struct timeval time[DRM_VBLANKTIME_RBSIZE];	/**< timestamp of current count */
+diff --git a/include/drm/drm_crtc.h b/include/drm/drm_crtc.h
+index b3cdbf6..43619bf 100644
+--- a/include/drm/drm_crtc.h
++++ b/include/drm/drm_crtc.h
+@@ -49,6 +49,7 @@ struct drm_clip_rect;
+ #define DRM_MODE_OBJECT_FB 0xfbfbfbfb
+ #define DRM_MODE_OBJECT_BLOB 0xbbbbbbbb
+ #define DRM_MODE_OBJECT_PLANE 0xeeeeeeee
++#define DRM_MODE_OBJECT_ANY 0
+ 
+ struct drm_mode_object {
+ 	uint32_t id;
+@@ -286,6 +287,7 @@ struct drm_property_blob {
+ 	struct drm_mode_object base;
+ 	struct list_head head;
+ 	unsigned int length;
++	unsigned int max_length;
+ 	unsigned char data[];
+ };
+ 
+@@ -442,6 +444,9 @@ struct drm_crtc {
+ 	void *helper_private;
+ 
+ 	struct drm_object_properties properties;
++
++	struct drm_property_blob *mode_blob;
++	struct drm_property_blob *connector_ids_blob;
+ };
+ 
+ 
+@@ -692,6 +697,10 @@ struct drm_plane {
+ 	void *helper_private;
+ 
+ 	struct drm_object_properties properties;
++
++	uint32_t src_x, src_y, src_w, src_h;
++	int32_t crtc_x, crtc_y;
++	uint32_t crtc_w, crtc_h;
+ };
+ 
+ /**
+@@ -854,6 +863,25 @@ struct drm_mode_config {
+ 	struct drm_property *dithering_mode_property;
+ 	struct drm_property *dirty_info_property;
+ 
++	/* CRTC/plane properties */
++	struct drm_property *src_x_prop;
++	struct drm_property *src_y_prop;
++	struct drm_property *src_w_prop;
++	struct drm_property *src_h_prop;
++	struct drm_property *crtc_x_prop;
++	struct drm_property *crtc_y_prop;
++	struct drm_property *crtc_w_prop;
++	struct drm_property *crtc_h_prop;
++	struct drm_property *fb_id_prop;
++	struct drm_property *crtc_id_prop;
++	struct drm_property *mode_prop;
++	struct drm_property *connector_ids_prop;
++	struct drm_property *cursor_id_prop;
++	struct drm_property *cursor_x_prop;
++	struct drm_property *cursor_y_prop;
++	struct drm_property *cursor_w_prop;
++	struct drm_property *cursor_h_prop;
++
+ 	/* dumb ioctl parameters */
+ 	uint32_t preferred_depth, prefer_shadow;
+ };
+@@ -998,6 +1026,15 @@ struct drm_property *drm_property_create_range(struct drm_device *dev, int flags
+ 					 const char *name,
+ 					 uint64_t min, uint64_t max);
+ extern void drm_property_destroy(struct drm_device *dev, struct drm_property *property);
++extern struct drm_property_blob *drm_property_create_blob(struct drm_device *dev,
++							unsigned int level,
++							unsigned int max_length,
++							const void *data);
++extern int drm_property_blob_replace_data(struct drm_property_blob *blob,
++					unsigned int length,
++					const void *data);
++extern void drm_property_destroy_blob(struct drm_device *dev,
++				     struct drm_property_blob *blob);
+ extern int drm_property_add_enum(struct drm_property *property, int index,
+ 				 uint64_t value, const char *name);
+ extern int drm_mode_create_dvi_i_properties(struct drm_device *dev);
+@@ -1099,6 +1136,8 @@ extern int drm_mode_obj_get_properties_ioctl(struct drm_device *dev, void *data,
+ 					     struct drm_file *file_priv);
+ extern int drm_mode_obj_set_property_ioctl(struct drm_device *dev, void *data,
+ 					   struct drm_file *file_priv);
++extern int drm_mode_atomic_ioctl(struct drm_device *dev,
++				void *data, struct drm_file *file_priv);
+ 
+ extern void drm_fb_get_bpp_depth(uint32_t format, unsigned int *depth,
+ 				 int *bpp);
+@@ -1107,5 +1146,59 @@ extern int drm_format_plane_cpp(uint32_t format, int plane);
+ extern int drm_format_horz_chroma_subsampling(uint32_t format);
+ extern int drm_format_vert_chroma_subsampling(uint32_t format);
+ extern const char *drm_get_format_name(uint32_t format);
++extern int drm_crtc_convert_umode(struct drm_display_mode *out,
++				const struct drm_mode_modeinfo *in);
++
++/**
++  * drm_region - two dimensional region
++  * @x1: horizontal starting coordinate (inclusive)
++  * @x2: horizontal ending coordinate (exclusive)
++  * @y1: vertical starting coordinate (inclusive)
++  * @y2: vertical ending coordinate (exclusive)
++  */
++struct drm_region {
++	int x1, y1, x2, y2;
++};
++
++extern void drm_region_adjust_size(struct drm_region *r, int x, int y);
++extern void drm_region_translate(struct drm_region *r, int x, int y);
++extern void drm_region_subsample(struct drm_region *r, int hsub, int vsub);
++extern int drm_region_width(const struct drm_region *r);
++extern int drm_region_height(const struct drm_region *r);
++extern bool drm_region_visible(const struct drm_region *r);
++extern bool drm_region_clip(struct drm_region *r,
++			  const struct drm_region *clip);
++extern bool drm_region_clip_scaled(struct drm_region *src,
++				  struct drm_region *dst,
++				  const struct drm_region *clip,
++				  int hscale, int vscale);
++extern int drm_calc_hscale(struct drm_region *src, struct drm_region *dst,
++			  int min_hscale, int max_hscale);
++extern int drm_calc_vscale(struct drm_region *src, struct drm_region *dst,
++			  int min_vscale, int max_vscale);
++
++extern int drm_mode_create_properties(struct drm_device *dev);
++extern void drm_mode_destroy_properties(struct drm_device *dev);
++
++extern int drm_crtc_create_blobs(struct drm_crtc *crtc);
++extern void drm_crtc_destroy_blobs(struct drm_crtc *crtc);
++
++extern void drm_crtc_attach_properties(struct drm_crtc *crtc);
++extern void drm_plane_attach_properties(struct drm_plane *plane);
++
++extern void drm_crtc_update_properties(struct drm_crtc *crtc);
++extern void drm_plane_update_properties(struct drm_plane *plane);
++
++struct drm_atomic_funcs {
++	void *(*begin)(struct drm_device *dev, struct drm_file *file,
++		  uint32_t flags, uint64_t user_data);
++	int (*set)(struct drm_device *dev, void *state,
++		  struct drm_mode_object *obj, struct drm_property *prop,
++		  uint64_t value, void *blob_data);
++	int (*check)(struct drm_device *dev, void *state);
++	int (*commit)(struct drm_device *dev, void *state);
++	void (*end)(struct drm_device *dev, void *state);
++};
++
+ 
+ #endif /* __DRM_CRTC_H__ */
+diff --git a/include/drm/drm_flip.h b/include/drm/drm_flip.h
+new file mode 100644
+index 0000000..4172d6e
+--- /dev/null
++++ b/include/drm/drm_flip.h
+@@ -0,0 +1,244 @@
++/*
++ * Copyright (C) 2012 Intel Corporation
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and iated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ *
++ * Authors:
++ * Ville Syrjälä <ville.syrjala@linux.intel.com>
++ */
++
++#ifndef DRM_FLIP_H
++#define DRM_FLIP_H
++
++#include <linux/list.h>
++#include <linux/spinlock.h>
++#include <linux/workqueue.h>
++
++struct drm_flip;
++struct drm_flip_helper;
++struct drm_flip_driver;
++
++/* Driver callbacks for drm_flip_driver */
++struct drm_flip_driver_funcs {
++	/*
++	 * Optional callback, called after drm_flip_driver_schedule_flips()
++	 * has called drm_flip_helper::flip() for all the provided flips.
++	 * Can be used to:
++	 * - commit the flips atomically to the hardware, if the
++	 *   hardware provides some mechanism to do that.
++	 * - flush posted writes to make sure all the flips have reached
++	 *   the hardware
++	 * Called with drm_flip_driver::lock held.
++	 */
++	void (*flush)(struct drm_flip_driver *driver);
++};
++
++/*
++ * The driver needs one drm_flip_driver to
++ * coordinates the drm_flip mechanism.
++ */
++struct drm_flip_driver {
++	/* protects drm_flip_driver, drm_flip_helper, and drm_flip internals. */
++	spinlock_t lock;
++
++	/* list of drm_flips waiting to be finished, protected by 'lock' */
++	struct list_head finish_list;
++
++	/* list of drm_flips waiting to be cleaned up, protected by 'lock' */
++	struct list_head cleanup_list;
++
++	/* work used to finish the drm_flips */
++	struct work_struct finish_work;
++
++	/* work used to clean up the drm_flips */
++	struct work_struct cleanup_work;
++
++	/* driver provided callback functions */
++	const struct drm_flip_driver_funcs *funcs;
++
++	/* work queue for finish_work and cleanup_work */
++	struct workqueue_struct *wq;
++};
++
++/* Driver callbacks for drm_flip_helper */
++struct drm_flip_helper_funcs {
++	/*
++	 * Optional function to perform heavy but non-timing
++	 * critial preparations for the flip.
++	 * Called from drm_flip_driver_prepare_flips() with
++	 * no extra locks being held.
++	 */
++	void (*prepare)(struct drm_flip *flip);
++	/*
++	 * Instruct the hardware to flip on the next vblank.
++	 * Must return true, iff pending_flip exists, and has
++	 * actually flipped (ie. now being scanned out).
++	 * Otherwise must return false.
++	 * Called with drm_flip_driver::lock held.
++	 */
++	bool (*flip)(struct drm_flip *flip,
++		     struct drm_flip *pending_flip);
++	/*
++	 * Called from drm_flip_helper_vblank() if
++	 * pending_flip exists. Must return true, iff
++	 * pending_flip has actually flipped (ie. now
++	 * being scanned out). Otherwise must return false.
++	 * Called with drm_flip_driver::lock held.
++	 */
++	bool (*vblank)(struct drm_flip *pending_flip);
++
++	/*
++	 * The flip has just occured, or it got overwritten
++	 * by a more recent flip. If the flip occured, it is
++	 * now being scanned out, otherwise it is scheduled
++	 * for cleanup.
++	 * Can be called from drm_flip_driver_schedule_flips(),
++	 * drm_flip_driver_complete_flips(), or from
++	 * drm_flip_helper_vblank().
++	 * Called with drm_flip_driver::lock held.
++	 */
++	void (*complete)(struct drm_flip *flip);
++
++	/*
++	 * Perform finishing steps on the flip. Called from a workqueue
++	 * soon after the flip has completed. The flip's buffer may be
++	 * actively scanned out.
++	 * Called with no locks being held.
++	 */
++	void (*finish)(struct drm_flip *flip);
++
++	/*
++	 * Perform final cleanup on the flip. Called from a workqueue
++	 * after the flip's buffer is no longer being scanned out.
++	 * Called with no locks being held.
++	 */
++	void (*cleanup)(struct drm_flip *flip);
++
++};
++
++/*
++ * The driver needs one drm_flip_helper for each scanout engine it
++ * wants to operate through the drm_flip mechanism.
++ */
++struct drm_flip_helper {
++	/* drm_flip from the previous drm_flip_schedule() call */
++	struct drm_flip *pending_flip;
++	/* drm_flip whose buffer is being scanned out */
++	struct drm_flip *scanout_flip;
++	/* associated drm_flip_driver */
++	struct drm_flip_driver *driver;
++	/* driver provided callback functions */
++	const struct drm_flip_helper_funcs *funcs;
++};
++
++/*
++ * This structure represents a single page flip operation.
++ */
++struct drm_flip {
++	/* associated drm_flip_helper */
++	struct drm_flip_helper *helper;
++	/* has this flip occured? */
++	bool flipped;
++	/* has the finish work been executed for this flip? */
++	bool finished;
++	/* used to keep this flip on various lists */
++	struct list_head list;
++};
++
++/*
++ * Initialize the flip driver.
++ */
++void drm_flip_driver_init(struct drm_flip_driver *driver,
++			  const struct drm_flip_driver_funcs *funcs);
++
++/*
++ * Finalize the flip driver. This will block until all the
++ * pending finish and cleanup work has been completed.
++ */
++void drm_flip_driver_fini(struct drm_flip_driver *driver);
++
++/*
++ * Initialize flip helper.
++ */
++void drm_flip_helper_init(struct drm_flip_helper *helper,
++			  struct drm_flip_driver *driver,
++			  const struct drm_flip_helper_funcs *funcs);
++
++/*
++ * Clear flip helper state. This will forcefully complete the
++ * helper's pending flip (if any).
++ */
++void drm_flip_helper_clear(struct drm_flip_helper *helper);
++
++/*
++ * Finalize the flip helper. This will forcefully complete the
++ * helper's pending flip (if any), and wait for the finish and
++ * cleanup works to finish.
++ */
++void drm_flip_helper_fini(struct drm_flip_helper *helper);
++
++/*
++ * Call this from the driver's vblank handler for the scanout engine
++ * associated with this helper.
++ */
++void drm_flip_helper_vblank(struct drm_flip_helper *helper);
++
++/*
++ * This will call drm_flip_helper::prepare() (if provided) for all the
++ * drm_flips on the list. The purpose is to perform any non-timing critical
++ * preparation steps for the flips before taking locks or disabling interrupts.
++ */
++void drm_flip_driver_prepare_flips(struct drm_flip_driver *driver,
++				   struct list_head *flips);
++
++/*
++ * Schedule the flips on the list to occur on the next vblank.
++ *
++ * This will call drm_flip_helper::flip() for all the drm_flips on the list.
++ * It will then call drm_flip_driver::flush(), after which it will complete
++ * any pending_flip that got overridden by the new flips.
++ *
++ * Unless the hardware provides some mechanism to synchronize the flips, the
++ * time spent until drm_flip_driver::flush() is timing critical and the driver
++ * must somehow make sure it can complete the operation in a seemingly atomic
++ * fashion.
++ */
++void drm_flip_driver_schedule_flips(struct drm_flip_driver *driver,
++				    struct list_head *flips);
++
++/*
++ * This will complete any pending_flip and also all the flips
++ * on the provided list (in that order).
++ *
++ * Call this instead of drm_flip_driver_schedule_flips()
++ * eg. if the hardware powered down, and you just want to keep
++ * the drm_flip mechanim's state consistent w/o waking up the
++ * hardware.
++ */
++void drm_flip_driver_complete_flips(struct drm_flip_driver *driver,
++				    struct list_head *flips);
++
++/*
++ * Initialize the flip structure members.
++ */
++void drm_flip_init(struct drm_flip *flip,
++		   struct drm_flip_helper *helper);
++
++#endif
+diff --git a/include/uapi/drm/drm.h b/include/uapi/drm/drm.h
+index 1d1c6f0..7e8dcf9 100644
+--- a/include/uapi/drm/drm.h
++++ b/include/uapi/drm/drm.h
+@@ -732,6 +732,7 @@ struct drm_prime_handle {
+ #define DRM_IOCTL_MODE_ADDFB2		DRM_IOWR(0xB8, struct drm_mode_fb_cmd2)
+ #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES	DRM_IOWR(0xB9, struct drm_mode_obj_get_properties)
+ #define DRM_IOCTL_MODE_OBJ_SETPROPERTY	DRM_IOWR(0xBA, struct drm_mode_obj_set_property)
++#define DRM_IOCTL_MODE_ATOMIC  DRM_IOWR(0xBB, struct drm_mode_atomic)
+ 
+ /**
+  * Device specific ioctls should only be in their respective headers
+@@ -763,6 +764,7 @@ struct drm_event {
+ 
+ #define DRM_EVENT_VBLANK 0x01
+ #define DRM_EVENT_FLIP_COMPLETE 0x02
++#define DRM_EVENT_ATOMIC_COMPLETE 0x03
+ 
+ struct drm_event_vblank {
+ 	struct drm_event base;
+@@ -773,6 +775,17 @@ struct drm_event_vblank {
+ 	__u32 reserved;
+ };
+ 
++struct drm_event_atomic {
++	struct drm_event base;
++	__u64 user_data;
++	__u32 tv_sec;
++	__u32 tv_usec;
++	__u32 sequence;
++	__u32 obj_id;
++	__u32 old_fb_id;
++};
++
++
+ #define DRM_CAP_DUMB_BUFFER 0x1
+ #define DRM_CAP_VBLANK_HIGH_CRTC 0x2
+ #define DRM_CAP_DUMB_PREFERRED_DEPTH 0x3
+diff --git a/include/uapi/drm/drm_mode.h b/include/uapi/drm/drm_mode.h
+index 10b6db7..d6c1f4d 100644
+--- a/include/uapi/drm/drm_mode.h
++++ b/include/uapi/drm/drm_mode.h
+@@ -475,4 +475,20 @@ struct drm_mode_destroy_dumb {
+ 	uint32_t handle;
+ };
+ 
++#define DRM_MODE_ATOMIC_TEST_ONLY (1<<0)
++#define DRM_MODE_ATOMIC_EVENT (1<<1)
++#define DRM_MODE_ATOMIC_NONBLOCK (1<<2)
++
++/* FIXME come up with some sane error reporting mechanism? */
++struct drm_mode_atomic {
++	__u32 flags;
++	__u32 count_objs;
++	__u64 objs_ptr;
++	__u64 count_props_ptr;
++	__u64 props_ptr;
++	__u64 prop_values_ptr;
++	__u64 blob_values_ptr;
++	__u64 user_data;
++};
++
+ #endif

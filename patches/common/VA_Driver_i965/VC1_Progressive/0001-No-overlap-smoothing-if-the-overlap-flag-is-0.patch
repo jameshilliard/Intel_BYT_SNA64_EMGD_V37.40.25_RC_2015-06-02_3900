@@ -1,0 +1,71 @@
+From 02ea019607ac3a99b5a47c42acefdf5a8c422e7a Mon Sep 17 00:00:00 2001
+From: Lim Siew Hoon <siew.hoon.lim@intel.com>
+Date: Wed, 4 Feb 2015 15:07:56 +0800
+Subject: [Intel_VA] No overlap smoothing if the overlap flag is 0
+
+signed-off-by: Xiang, Haihao <haihao.xiang@intel.com>
+Reviewed-by: Chinnadurai, Srinivasan <srinivasan.chinnadurai@intel.com>
+---
+ src/gen7_mfd.c | 46 +++++++++++++++++++++++++---------------------
+ 1 file changed, 25 insertions(+), 21 deletions(-)
+
+diff --git a/src/gen7_mfd.c b/src/gen7_mfd.c
+index 51a1850..1e26fc4 100755
+--- a/src/gen7_mfd.c
++++ b/src/gen7_mfd.c
+@@ -1503,27 +1503,31 @@ gen7_mfd_vc1_pic_state(VADriverContextP ctx,
+             brfd = 0;
+     }
+ 
+-    overlap = 0;
+-    if (profile != GEN7_VC1_ADVANCED_PROFILE){
+-        if (pic_param->pic_quantizer_fields.bits.pic_quantizer_scale >= 9 &&
+-            pic_param->picture_fields.bits.picture_type != GEN7_VC1_B_PICTURE) {
+-            overlap = 1; 
+-        }
+-    }else {
+-        if (pic_param->picture_fields.bits.picture_type == GEN7_VC1_P_PICTURE &&
+-             pic_param->pic_quantizer_fields.bits.pic_quantizer_scale >= 9){
+-              overlap = 1; 
+-        }
+-        if (pic_param->picture_fields.bits.picture_type == GEN7_VC1_I_PICTURE ||
+-            pic_param->picture_fields.bits.picture_type == GEN7_VC1_BI_PICTURE){
+-             if (pic_param->pic_quantizer_fields.bits.pic_quantizer_scale >= 9){
+-                overlap = 1; 
+-             } else if (va_to_gen7_vc1_condover[pic_param->conditional_overlap_flag] == 2 ||
+-                        va_to_gen7_vc1_condover[pic_param->conditional_overlap_flag] == 3) {
+-                 overlap = 1;
+-             }
+-        }
+-    } 
++    overlap = pic_param->sequence_fields.bits.overlap;
++
++    if(overlap) {
++	overlap = 0;
++	if (profile != GEN7_VC1_ADVANCED_PROFILE) {
++		if (pic_param->pic_quantizer_fields.bits.pic_quantizer_scale >= 9 &&
++			pic_param->picture_fields.bits.picture_type != GEN7_VC1_B_PICTURE) {
++			overlap = 1;
++		}
++	}else {
++		if (pic_param->picture_fields.bits.picture_type == GEN7_VC1_P_PICTURE &&
++			pic_param->pic_quantizer_fields.bits.pic_quantizer_scale >= 9) {
++			overlap = 1;
++		}
++		if (pic_param->picture_fields.bits.picture_type == GEN7_VC1_I_PICTURE ||
++			pic_param->picture_fields.bits.picture_type == GEN7_VC1_BI_PICTURE) {
++			if (pic_param->pic_quantizer_fields.bits.pic_quantizer_scale >= 9) {
++				overlap = 1;
++			} else if (va_to_gen7_vc1_condover[pic_param->conditional_overlap_flag] == 2 ||
++				va_to_gen7_vc1_condover[pic_param->conditional_overlap_flag] == 3) {
++				overlap = 1;
++			}
++		}
++	}
++    }
+ 
+     assert(pic_param->conditional_overlap_flag < 3);
+     assert(pic_param->mv_fields.bits.mv_table < 4); /* FIXME: interlace mode */
+-- 
+1.8.3.1
+

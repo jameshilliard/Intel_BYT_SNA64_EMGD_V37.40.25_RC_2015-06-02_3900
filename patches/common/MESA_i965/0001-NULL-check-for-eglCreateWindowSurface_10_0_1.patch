@@ -1,0 +1,31 @@
+From e5bcadd3494caf906af4f1b31cf35c60afc66d9c Mon Sep 17 00:00:00 2001
+From: Sinclair Yeh <sinclair.yeh@intel.com>
+Date: Thu, 8 May 2014 11:47:48 -0700
+Subject: [PATCH] NULL check for eglCreateWindowSurface
+
+This patch is to address an EGL frontend crash when
+EGLNativeWindowType is set to NULL while calling
+eglCreateWindowSurface
+---
+ src/egl/drivers/dri2/platform_wayland.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+index 43e8f4b..d11054c 100644
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -123,6 +123,11 @@ dri2_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
+ 
+    (void) drv;
+ 
++   if (NULL == window)
++   {
++      return NULL;
++   }
++
+    dri2_surf = malloc(sizeof *dri2_surf);
+    if (!dri2_surf) {
+       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
+-- 
+1.9.1
+

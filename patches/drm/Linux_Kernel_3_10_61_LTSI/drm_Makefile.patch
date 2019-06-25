@@ -1,0 +1,11 @@
+--- linux-ltsi-3.10.61_org/drivers/gpu/drm/Makefile	2015-01-07 09:44:51.000000000 +0800
++++ linux-ltsi-3.10.61/drivers/gpu/drm/Makefile	2015-03-05 11:03:44.252991855 +0800
+@@ -39,6 +39,8 @@
+ obj-$(CONFIG_DRM_MGA)	+= mga/
+ obj-$(CONFIG_DRM_I810)	+= i810/
+ obj-$(CONFIG_DRM_I915)  += i915/
++obj-$(CONFIG_DRM_EMGD)  += emgd/
++obj-$(CONFIG_DRM_IPVR)  += ipvr/
+ obj-$(CONFIG_DRM_MGAG200) += mgag200/
+ obj-$(CONFIG_DRM_CIRRUS_QEMU) += cirrus/
+ obj-$(CONFIG_DRM_SIS)   += sis/

@@ -1,0 +1,166 @@
+diff --git a/src/gen7_mfd.c b/src/gen7_mfd.c
+index 8e0d503..6c1380d 100755
+--- a/src/gen7_mfd.c
++++ b/src/gen7_mfd.c
+@@ -1363,10 +1363,16 @@ gen7_mfd_vc1_pic_state(VADriverContextP ctx,
+     int profile;
+     int overlap;
+     int interpolation_mode = 0;
++    int height_in_mbs = 0;
+ 
+     assert(decode_state->pic_param && decode_state->pic_param->buffer);
+     pic_param = (VAPictureParameterBufferVC1 *)decode_state->pic_param->buffer;
+ 
++    if (pic_param->picture_fields.bits.frame_coding_mode < 2)
++        height_in_mbs = ALIGN(pic_param->coded_height, 16) / 16;
++    else
++        height_in_mbs = ((ALIGN(pic_param->coded_height, 16) / 16) + 1) >> 1;
++
+     profile = va_to_gen7_vc1_profile[pic_param->sequence_fields.bits.profile];
+     dquant = pic_param->pic_quantizer_fields.bits.dquant;
+     dquantfrm = pic_param->pic_quantizer_fields.bits.dq_frame;
+@@ -1434,11 +1440,18 @@ gen7_mfd_vc1_pic_state(VADriverContextP ctx,
+         unified_mv_mode = va_to_gen7_vc1_mv[pic_param->mv_fields.bits.mv_mode];
+     }
+ 
+-    if (pic_param->sequence_fields.bits.interlace == 1 &&
+-        pic_param->picture_fields.bits.frame_coding_mode != 0) { /* frame-interlace or field-interlace */
+-        /* FIXME: calculate reference field picture polarity */
+-        assert(0);
+-        ref_field_pic_polarity = 0;
++    if ((pic_param->picture_fields.bits.frame_coding_mode > 1) &&
++        (pic_param->picture_fields.bits.picture_type == GEN7_VC1_P_PICTURE) &&
++        (!pic_param->reference_fields.bits.num_reference_pictures)) {
++        if (pic_param->reference_fields.bits.reference_field_pic_indicator == 0) {
++            ref_field_pic_polarity = pic_param->picture_fields.bits.is_first_field ? 
++                                        pic_param->picture_fields.bits.top_field_first :
++                                        !pic_param->picture_fields.bits.top_field_first;
++        } else {
++            ref_field_pic_polarity = pic_param->picture_fields.bits.is_first_field ?
++                                        !pic_param->picture_fields.bits.top_field_first :
++                                        pic_param->picture_fields.bits.top_field_first;
++        }
+     }
+ 
+     if (pic_param->b_picture_fraction < 21)
+@@ -1525,8 +1538,24 @@ gen7_mfd_vc1_pic_state(VADriverContextP ctx,
+         }
+     } 
+ 
++    /* Reset the value of picture type for field-interlace */
++    if (fcm > 1)
++        switch (picture_type) {
++        case GEN7_VC1_I_PICTURE:
++            picture_type = 0;
++            break; 
++        case GEN7_VC1_P_PICTURE:
++            picture_type = 3;
++            break; 
++        case GEN7_VC1_B_PICTURE:
++            picture_type = 4;
++            break; 
++        case GEN7_VC1_BI_PICTURE:
++            picture_type = 7;
++            break; 
++        }
++
+     assert(pic_param->conditional_overlap_flag < 3);
+-    assert(pic_param->mv_fields.bits.mv_table < 4); /* FIXME: interlace mode */
+ 
+     if (pic_param->mv_fields.bits.mv_mode == VAMvMode1MvHalfPelBilinear ||
+         (pic_param->mv_fields.bits.mv_mode == VAMvModeIntensityCompensation &&
+@@ -1542,7 +1571,7 @@ gen7_mfd_vc1_pic_state(VADriverContextP ctx,
+     BEGIN_BCS_BATCH(batch, 6);
+     OUT_BCS_BATCH(batch, MFD_VC1_LONG_PIC_STATE | (6 - 2));
+     OUT_BCS_BATCH(batch,
+-                  (((ALIGN(pic_param->coded_height, 16) / 16) - 1) << 16) |
++                  ((height_in_mbs - 1) << 16) |
+                   ((ALIGN(pic_param->coded_width, 16) / 16) - 1));
+     OUT_BCS_BATCH(batch,
+                   ((ALIGN(pic_param->coded_width, 16) / 16 + 1) / 2 - 1) << 24 |
+@@ -1607,7 +1636,7 @@ gen7_mfd_vc1_pred_pipe_state(VADriverContextP ctx,
+ {
+     struct intel_batchbuffer *batch = gen7_mfd_context->base.batch;
+     VAPictureParameterBufferVC1 *pic_param;
+-    int intensitycomp_single;
++    int intensitycomp_single, replication_mode = 0;
+ 
+     assert(decode_state->pic_param && decode_state->pic_param->buffer);
+     pic_param = (VAPictureParameterBufferVC1 *)decode_state->pic_param->buffer;
+@@ -1616,6 +1645,16 @@ gen7_mfd_vc1_pred_pipe_state(VADriverContextP ctx,
+     pic_param = (VAPictureParameterBufferVC1 *)decode_state->pic_param->buffer;
+     intensitycomp_single = (pic_param->mv_fields.bits.mv_mode == VAMvModeIntensityCompensation);
+ 
++    if (pic_param->sequence_fields.bits.interlace == 1 &&
++        pic_param->picture_fields.bits.frame_coding_mode != 0) {
++        /* frame-interlace or field-interlace */
++        if (pic_param->picture_fields.bits.picture_type == GEN7_VC1_P_PICTURE) {
++            replication_mode = 0x5;
++        } else if (pic_param->picture_fields.bits.picture_type == GEN7_VC1_B_PICTURE) {
++            replication_mode = 0xf;
++        }
++    }
++ 
+     BEGIN_BCS_BATCH(batch, 6);
+     OUT_BCS_BATCH(batch, MFX_VC1_PRED_PIPE_STATE | (6 - 2));
+     OUT_BCS_BATCH(batch,
+@@ -1623,7 +1662,7 @@ gen7_mfd_vc1_pred_pipe_state(VADriverContextP ctx,
+                   0 << 12 |
+                   intensitycomp_single << 10 |
+                   intensitycomp_single << 8 |
+-                  0 << 4 | /* FIXME: interlace mode */
++                  replication_mode << 4 |
+                   0);
+     OUT_BCS_BATCH(batch,
+                   pic_param->luma_shift << 16 |
+@@ -1720,8 +1759,10 @@ gen7_mfd_vc1_bsd_object(VADriverContextP ctx,
+ 
+     if (next_slice_param)
+         next_slice_start_vert_pos = next_slice_param->slice_vertical_position;
+-    else
++    else if (pic_param->picture_fields.bits.frame_coding_mode < 2)
+         next_slice_start_vert_pos = ALIGN(pic_param->coded_height, 16) / 16;
++    else
++        next_slice_start_vert_pos = ((ALIGN(pic_param->coded_height, 16) / 16) + 1) >> 1;
+ 
+     BEGIN_BCS_BATCH(batch, 5);
+     OUT_BCS_BATCH(batch, MFD_VC1_BSD_OBJECT | (5 - 2));
+diff --git a/src/i965_decoder_utils.c b/src/i965_decoder_utils.c
+index 4ef09b5..d9d54fc 100644
+--- a/src/i965_decoder_utils.c
++++ b/src/i965_decoder_utils.c
+@@ -485,7 +485,7 @@ intel_update_vc1_frame_store_index(VADriverContextP ctx,
+                                    GenFrameStore frame_store[MAX_GEN_REFERENCE_FRAMES])
+ {
+     struct object_surface *obj_surface;
+-    int i;
++    int i = 0;
+ 
+     obj_surface = decode_state->reference_objects[0];
+ 
+@@ -510,11 +510,24 @@ intel_update_vc1_frame_store_index(VADriverContextP ctx,
+         frame_store[1].surface_id = pic_param->backward_reference_picture;
+         frame_store[1].obj_surface = obj_surface;
+     }
+-    for (i = 2; i < MAX_GEN_REFERENCE_FRAMES; i++) {
++
++    for (i = 2; i < MAX_GEN_REFERENCE_FRAMES; ++i) {
+         frame_store[i].surface_id = frame_store[i % 2].surface_id;
+         frame_store[i].obj_surface = frame_store[i % 2].obj_surface;
+     }
+ 
++    /* For field-interlace second field */
++    if (pic_param->picture_fields.bits.frame_coding_mode > 1 && 
++        !pic_param->picture_fields.bits.is_first_field && 
++        pic_param->picture_fields.bits.picture_type) {
++        if (pic_param->picture_fields.bits.top_field_first) {
++            frame_store[0].surface_id = decode_state->current_render_target;
++            frame_store[0].obj_surface = decode_state->render_object;
++        } else {
++            frame_store[2].surface_id = decode_state->current_render_target;
++            frame_store[2].obj_surface = decode_state->render_object;
++        }
++    }
+ }
+ 
+ static VAStatus

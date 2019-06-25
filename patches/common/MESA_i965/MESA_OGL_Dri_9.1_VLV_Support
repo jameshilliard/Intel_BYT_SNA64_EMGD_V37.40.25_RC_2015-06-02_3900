@@ -1,0 +1,108 @@
+diff --git a/include/pci_ids/i965_pci_ids.h b/include/pci_ids/i965_pci_ids.h
+index 09dca5b..84e46f6 100644
+--- a/include/pci_ids/i965_pci_ids.h
++++ b/include/pci_ids/i965_pci_ids.h
+@@ -26,6 +26,8 @@ CHIPSET(0x0156, IVYBRIDGE_M_GT1, ivb_gt1)
+ CHIPSET(0x0166, IVYBRIDGE_M_GT2, ivb_gt2)
+ CHIPSET(0x015a, IVYBRIDGE_S_GT1, ivb_gt1)
+ CHIPSET(0x016a, IVYBRIDGE_S_GT2, ivb_gt2)
++CHIPSET(0x0f30, VALLEYVIEW_PO, ivb_gt1)
++CHIPSET(0x0f31, VALLEYVIEW_A0, ivb_gt1)
+ CHIPSET(0x0402, HASWELL_GT1, hsw_gt1)
+ CHIPSET(0x0412, HASWELL_GT2, hsw_gt2)
+ CHIPSET(0x0422, HASWELL_GT2_PLUS, hsw_gt2)
+diff --git a/src/mesa/drivers/dri/i965/brw_context.c b/src/mesa/drivers/dri/i965/brw_context.c
+index e94df26..f66b1e8 100644
+--- a/src/mesa/drivers/dri/i965/brw_context.c
++++ b/src/mesa/drivers/dri/i965/brw_context.c
+@@ -298,7 +298,23 @@ brwCreateContext(int api,
+    }
+ 
+    /* WM maximum threads is number of EUs times number of threads per EU. */
+-   if (intel->gen >= 7) {
++   if (intel->gen >= 8) {
++      assert(!"gen 8 chipset limits not implemented");
++   } else if (intel->intelScreen->deviceID == PCI_CHIP_VALLEYVIEW_A0) {
++      brw->max_wm_threads = 48;
++      brw->max_vs_threads = 36;
++      brw->max_gs_threads = 36;
++      brw->urb.size = 96;
++      brw->urb.max_vs_entries = 512;
++      brw->urb.max_gs_entries = 192;
++   } else if (IS_VALLEYVIEW(intel->intelScreen->deviceID)) {
++      brw->max_wm_threads = 16; // 32?
++      brw->max_vs_threads = 16;
++      brw->max_gs_threads = 16;
++      brw->urb.size = 96;
++      brw->urb.max_vs_entries = 512;
++      brw->urb.max_gs_entries = 192;
++   } else if (IS_IVYBRIDGE(intel->intelScreen->deviceID)) {
+       if (intel->gt == 1) {
+ 	 brw->max_wm_threads = 48;
+ 	 brw->max_vs_threads = 36;
+@@ -314,7 +330,7 @@ brwCreateContext(int api,
+ 	 brw->urb.max_vs_entries = 704;
+ 	 brw->urb.max_gs_entries = 320;
+       } else {
+-	 assert(!"Unknown gen7 device.");
++	 assert(!"Unknown Ivybridge device.");
+       }
+    } else if (intel->gen == 6) {
+       if (intel->gt == 2) {
+diff --git a/src/mesa/drivers/dri/i965/brw_defines.h b/src/mesa/drivers/dri/i965/brw_defines.h
+index 3605c18..9fcb096 100644
+--- a/src/mesa/drivers/dri/i965/brw_defines.h
++++ b/src/mesa/drivers/dri/i965/brw_defines.h
+@@ -1043,7 +1043,7 @@ enum brw_message_target {
+ #define _3DSTATE_URB_GS                         0x7833 /* GEN7+ */
+ # define GEN7_URB_ENTRY_SIZE_SHIFT                      16
+ # define GEN7_URB_STARTING_ADDRESS_SHIFT                25
+-
++# define GEN7_URB_VS_MIN_ENTRIES                        32
+ #define _3DSTATE_PUSH_CONSTANT_ALLOC_VS         0x7912 /* GEN7+ */
+ #define _3DSTATE_PUSH_CONSTANT_ALLOC_PS         0x7916 /* GEN7+ */
+ # define GEN7_PUSH_CONSTANT_BUFFER_OFFSET_SHIFT         16
+diff --git a/src/mesa/drivers/dri/i965/gen7_urb.c b/src/mesa/drivers/dri/i965/gen7_urb.c
+index 481497b..1f3c723 100644
+--- a/src/mesa/drivers/dri/i965/gen7_urb.c
++++ b/src/mesa/drivers/dri/i965/gen7_urb.c
+@@ -88,6 +88,13 @@ gen7_upload_urb(struct brw_context *brw)
+    if (nr_vs_entries > brw->urb.max_vs_entries)
+       nr_vs_entries = brw->urb.max_vs_entries;
+ 
++    /* If the number of URB Allocation Size is smaller than 9 512 bit
++     * units set the number or URB to Entries to 32
++     */
++    if(brw->urb.vs_size < 9)
++       nr_vs_entries = GEN7_URB_VS_MIN_ENTRIES;
++
++
+    /* According to volume 2a, nr_vs_entries must be a multiple of 8. */
+    brw->urb.nr_vs_entries = ROUND_DOWN_TO(nr_vs_entries, 8);
+ 
+diff --git a/src/mesa/drivers/dri/intel/intel_chipset.h b/src/mesa/drivers/dri/intel/intel_chipset.h
+index 9c00ba8..addaefc 100644
+--- a/src/mesa/drivers/dri/intel/intel_chipset.h
++++ b/src/mesa/drivers/dri/intel/intel_chipset.h
+@@ -87,6 +87,9 @@
+ #define PCI_CHIP_IVYBRIDGE_S_GT1        0x015a  /* Server */
+ #define PCI_CHIP_IVYBRIDGE_S_GT2        0x016a
+ 
++#define PCI_CHIP_VALLEYVIEW_PO          0x0f30  /* Power on */
++#define PCI_CHIP_VALLEYVIEW_A0          0x0f31  /* Valley View A0 */
++
+ #define PCI_CHIP_HASWELL_GT1            0x0402 /* Desktop */
+ #define PCI_CHIP_HASWELL_GT2            0x0412
+ #define PCI_CHIP_HASWELL_GT2_PLUS       0x0422
+@@ -190,7 +193,11 @@
+ 
+ #define IS_IVYBRIDGE(devid)     (IS_IVB_GT1(devid) || IS_IVB_GT2(devid))
+ 
++#define IS_VALLEYVIEW(devid)    (devid == PCI_CHIP_VALLEYVIEW_PO || \
++                                 devid == PCI_CHIP_VALLEYVIEW_A0)
++
+ #define IS_GEN7(devid)	        (IS_IVYBRIDGE(devid) || \
++                                 IS_VALLEYVIEW(devid) || \
+ 				 IS_HASWELL(devid))
+ 
+ #define IS_HSW_GT1(devid)	(devid == PCI_CHIP_HASWELL_GT1 || \

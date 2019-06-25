@@ -1,0 +1,34 @@
+diff -rupN vlv_kernel_old/drivers/gpu/drm/Kconfig vlv_kernel/drivers/gpu/drm/Kconfig
+--- vlv_kernel_old/drivers/gpu/drm/Kconfig	2012-10-29 14:04:48.549054236 +0800
++++ vlv_kernel/drivers/gpu/drm/Kconfig	2012-10-29 14:17:26.409999437 +0800
+@@ -137,6 +137,30 @@ config DRM_I915
+ 	  i810 driver instead, and the Atom z5xx series has an entirely
+ 	  different implementation.
+ 
++config DRM_EMGD
++	tristate "EMGD Driver for VLV"
++	depends on DRM
++	depends on AGP
++	depends on AGP_INTEL
++	# we need shmfs for the swappable backing store, and in particular
++	# the shmem_readpage() which depends upon tmpfs
++	select SHMEM
++	select TMPFS
++	select DRM_KMS_HELPER
++	select FB_CFB_FILLRECT
++	select FB_CFB_COPYAREA
++	select FB_CFB_IMAGEBLIT
++	# EMGD (as i915 too) depends on ACPI_VIDEO when ACPI is enabled
++	# but for select to work, need to select ACPI_VIDEO's dependencies, ick
++	select BACKLIGHT_LCD_SUPPORT if ACPI
++	select BACKLIGHT_CLASS_DEVICE if ACPI
++	select VIDEO_OUTPUT_CONTROL if ACPI
++	select INPUT if ACPI
++	select ACPI_VIDEO if ACPI
++	select ACPI_BUTTON if ACPI
++	help
++	  EMGD driver for VLV
++
+ config DRM_I915_KMS
+ 	bool "Enable modesetting on intel by default"
+ 	depends on DRM_I915

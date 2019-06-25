@@ -1,0 +1,1838 @@
+From ce62b8e0596b4805cb7e09a4a4e66de5c7b11cf3 Mon Sep 17 00:00:00 2001
+From: Lucas Stach <l.stach@pengutronix.de>
+Date: Fri, 17 Jan 2014 12:19:17 +0100
+Subject: [PATCH 01/20] modeprint: pretty print connector names
+
+Use same names as the kernel, makes it easier to identify
+connectors in the common case.
+
+Signed-off-by: Lucas Stach <l.stach@pengutronix.de>
+Reviewed-by: Alex Deucher <alexander.deucher@amd.com>
+Reviewed-by: Rob Clark <robdclark@gmail.com>
+---
+ tests/modeprint/modeprint.c |   28 +++++++++++++++++++++++++++-
+ 1 files changed, 27 insertions(+), 1 deletions(-)
+
+diff --git a/tests/modeprint/modeprint.c b/tests/modeprint/modeprint.c
+index 545ff40..6f0d039 100644
+--- a/tests/modeprint/modeprint.c
++++ b/tests/modeprint/modeprint.c
+@@ -41,6 +41,8 @@
+ #include "xf86drm.h"
+ #include "xf86drmMode.h"
+ 
++#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
++
+ int connectors;
+ int full_props;
+ int edid;
+@@ -140,13 +142,37 @@ int printProperty(int fd, drmModeResPtr res, drmModePropertyPtr props, uint64_t
+ 	return 0;
+ }
+ 
++static const char * const output_names[] = { "None",
++					     "VGA",
++					     "DVI-I",
++					     "DVI-D",
++					     "DVI-A",
++					     "Composite",
++					     "SVIDEO",
++					     "LVDS",
++					     "Component",
++					     "DIN",
++					     "DP",
++					     "HDMI-A",
++					     "HDMI-B",
++					     "TV",
++					     "eDP",
++					     "Virtual",
++					     "DSI",
++};
++
+ int printConnector(int fd, drmModeResPtr res, drmModeConnectorPtr connector, uint32_t id)
+ {
+ 	int i = 0;
+ 	struct drm_mode_modeinfo *mode = NULL;
+ 	drmModePropertyPtr props;
+ 
+-	printf("Connector: %d-%d\n", connector->connector_type, connector->connector_type_id);
++	if (connector->connector_type < ARRAY_SIZE(output_names))
++		printf("Connector: %s-%d\n", output_names[connector->connector_type],
++			connector->connector_type_id);
++	else
++		printf("Connector: %d-%d\n", connector->connector_type,
++			connector->connector_type_id);
+ 	printf("\tid             : %i\n", id);
+ 	printf("\tencoder id     : %i\n", connector->encoder_id);
+ 	printf("\tconn           : %s\n", getConnectionText(connector->connection));
+-- 
+1.7.7.6
+
+
+From cbb31f2d6e674513c0f66484c414475baba09153 Mon Sep 17 00:00:00 2001
+From: Robert Millan <rmh@freebsd.org>
+Date: Thu, 23 Jan 2014 14:46:05 +0000
+Subject: [PATCH 02/20] drm: Implement drmCheckModesettingSupported() for
+ FreeBSD
+
+Add the missing implementation of drmCheckModesettingSupported()
+to detect KMS support on FreeBSD (and GNU/kFreeBSD).
+
+Bugzilla: https://bugs.freedesktop.org/show_bug.cgi?id=72847
+Signed-off-by: Konstantin Belousov <kib@freebsd.org>
+Signed-off-by: Robert Millan <rmh@freebsd.org>
+---
+ configure.ac  |    2 ++
+ xf86drmMode.c |   35 ++++++++++++++++++++++++++++++++++-
+ 2 files changed, 36 insertions(+), 1 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 969fb83..d2d19d6 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -185,6 +185,8 @@ AC_CANONICAL_HOST
+ if test "x$LIBKMS" = xauto ; then
+ 	case $host_os in
+ 		linux*)		LIBKMS="yes" ;;
++		freebsd* | kfreebsd*-gnu)
++				LIBKMS="yes" ;;
+ 		*)		LIBKMS="no" ;;
+ 	esac
+ fi
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index dd7966e..a6bb2ee 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -723,7 +723,7 @@ int drmModeConnectorSetProperty(int fd, uint32_t connector_id, uint32_t property
+ */
+ int drmCheckModesettingSupported(const char *busid)
+ {
+-#ifdef __linux__
++#if defined (__linux__)
+ 	char pci_dev_dir[1024];
+ 	int domain, bus, dev, func;
+ 	DIR *sysdir;
+@@ -773,6 +773,39 @@ int drmCheckModesettingSupported(const char *busid)
+ 	closedir(sysdir);
+ 	if (found)
+ 		return 0;
++#elif defined (__FreeBSD__) || defined (__FreeBSD_kernel__)
++	char kbusid[1024], sbusid[1024];
++	char oid[128];
++	int domain, bus, dev, func;
++	int i, modesetting, ret;
++	size_t len;
++
++	ret = sscanf(busid, "pci:%04x:%02x:%02x.%d", &domain, &bus, &dev,
++	    &func);
++	if (ret != 4)
++		return -EINVAL;
++	snprintf(kbusid, sizeof(kbusid), "pci:%04x:%02x:%02x.%d", domain, bus,
++	    dev, func);
++
++	/* How many GPUs do we expect in the machine ? */
++	for (i = 0; i < 16; i++) {
++		snprintf(oid, sizeof(oid), "hw.dri.%d.busid", i);
++		len = sizeof(sbusid);
++		ret = sysctlbyname(oid, sbusid, &len, NULL, 0);
++		if (ret == -1) {
++			if (errno == ENOENT)
++				continue;
++			return -EINVAL;
++		}
++		if (strcmp(sbusid, kbusid) != 0)
++			continue;
++		snprintf(oid, sizeof(oid), "hw.dri.%d.modesetting", i);
++		len = sizeof(modesetting);
++		ret = sysctlbyname(oid, &modesetting, &len, NULL, 0);
++		if (ret == -1 || len != sizeof(modesetting))
++			return -EINVAL;
++		return (modesetting ? 0 : -ENOSYS);
++	}
+ #endif
+ 	return -ENOSYS;
+ 
+-- 
+1.7.7.6
+
+
+From 128e74cf6492025e63e035566bd6e2203e8da5e1 Mon Sep 17 00:00:00 2001
+From: Rob Clark <robclark@freedesktop.org>
+Date: Fri, 31 Jan 2014 11:58:30 -0500
+Subject: [PATCH 03/20] freedreno: fix license
+
+The userspace headers were intended to be BSD license.
+
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/msm/msm_drm.h |   25 ++++++++++++++++---------
+ 1 files changed, 16 insertions(+), 9 deletions(-)
+
+diff --git a/freedreno/msm/msm_drm.h b/freedreno/msm/msm_drm.h
+index 090c724..b83c9a8 100644
+--- a/freedreno/msm/msm_drm.h
++++ b/freedreno/msm/msm_drm.h
+@@ -2,17 +2,24 @@
+  * Copyright (C) 2013 Red Hat
+  * Author: Rob Clark <robdclark@gmail.com>
+  *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU General Public License version 2 as published by
+- * the Free Software Foundation.
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
+  *
+- * This program is distributed in the hope that it will be useful, but WITHOUT
+- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+- * more details.
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
+  *
+- * You should have received a copy of the GNU General Public License along with
+- * this program.  If not, see <http://www.gnu.org/licenses/>.
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
+  */
+ 
+ #ifndef __MSM_DRM_H__
+-- 
+1.7.7.6
+
+
+From c5de5abbd90333fe1359283fb3a5e457b0f389f3 Mon Sep 17 00:00:00 2001
+From: Rob Clark <robclark@freedesktop.org>
+Date: Wed, 19 Feb 2014 11:01:23 -0500
+Subject: [PATCH 04/20] freedreno: some msm-ring reset/flush fixes
+
+Need to update timestamp on all ring's associated with a submit (ie.
+both the binning pass and main ring).  Also, make sure nr_reloc's
+in particular gets cleared if the rb is reset.
+
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/freedreno_priv.h       |    1 +
+ freedreno/freedreno_ringbuffer.c |    2 +
+ freedreno/msm/msm_ringbuffer.c   |   41 +++++++++++++++++++++++++++++--------
+ 3 files changed, 35 insertions(+), 9 deletions(-)
+
+diff --git a/freedreno/freedreno_priv.h b/freedreno/freedreno_priv.h
+index d5cf9f9..7438485 100644
+--- a/freedreno/freedreno_priv.h
++++ b/freedreno/freedreno_priv.h
+@@ -114,6 +114,7 @@ struct fd_ringmarker {
+ struct fd_ringbuffer_funcs {
+ 	void * (*hostptr)(struct fd_ringbuffer *ring);
+ 	int (*flush)(struct fd_ringbuffer *ring, uint32_t *last_start);
++	void (*reset)(struct fd_ringbuffer *ring);
+ 	void (*emit_reloc)(struct fd_ringbuffer *ring,
+ 			const struct fd_reloc *reloc);
+ 	void (*emit_reloc_ring)(struct fd_ringbuffer *ring,
+diff --git a/freedreno/freedreno_ringbuffer.c b/freedreno/freedreno_ringbuffer.c
+index 4443790..b9849c5 100644
+--- a/freedreno/freedreno_ringbuffer.c
++++ b/freedreno/freedreno_ringbuffer.c
+@@ -72,6 +72,8 @@ void fd_ringbuffer_reset(struct fd_ringbuffer *ring)
+ 	if (ring->pipe->id == FD_PIPE_2D)
+ 		start = &ring->start[0x140];
+ 	ring->cur = ring->last_start = start;
++	if (ring->funcs->reset)
++		ring->funcs->reset(ring);
+ }
+ 
+ /* maybe get rid of this and use fd_ringmarker_flush() from DDX too? */
+diff --git a/freedreno/msm/msm_ringbuffer.c b/freedreno/msm/msm_ringbuffer.c
+index f3e951f..c9c9256 100644
+--- a/freedreno/msm/msm_ringbuffer.c
++++ b/freedreno/msm/msm_ringbuffer.c
+@@ -169,6 +169,22 @@ static uint32_t find_next_reloc_idx(struct msm_ringbuffer *msm_ring,
+ 	return i;
+ }
+ 
++static void flush_reset(struct fd_ringbuffer *ring)
++{
++	struct msm_ringbuffer *msm_ring = to_msm_ringbuffer(ring);
++	unsigned i;
++
++	/* for each of the cmd buffers, clear their reloc's: */
++	for (i = 0; i < msm_ring->nr_cmds; i++) {
++		struct msm_ringbuffer *target_ring = to_msm_ringbuffer(msm_ring->rings[i]);
++		target_ring->nr_relocs = 0;
++	}
++
++	msm_ring->nr_relocs = 0;
++	msm_ring->nr_cmds = 0;
++	msm_ring->nr_bos = 0;
++}
++
+ static int msm_ringbuffer_flush(struct fd_ringbuffer *ring, uint32_t *last_start)
+ {
+ 	struct msm_ringbuffer *msm_ring = to_msm_ringbuffer(ring);
+@@ -205,8 +221,16 @@ static int msm_ringbuffer_flush(struct fd_ringbuffer *ring, uint32_t *last_start
+ 
+ 	ret = drmCommandWriteRead(ring->pipe->dev->fd, DRM_MSM_GEM_SUBMIT,
+ 			&req, sizeof(req));
+-	if (ret)
++	if (ret) {
+ 		ERROR_MSG("submit failed: %d (%s)", ret, strerror(errno));
++	} else {
++		/* update timestamp on all rings associated with submit: */
++		for (i = 0; i < msm_ring->nr_cmds; i++) {
++			struct fd_ringbuffer *target_ring = msm_ring->rings[i];
++			if (!ret)
++				target_ring->last_timestamp = req.fence;
++		}
++	}
+ 
+ 	LIST_FOR_EACH_ENTRY_SAFE(msm_bo, tmp, &msm_ring->submit_list, list[id]) {
+ 		struct list_head *list = &msm_bo->list[id];
+@@ -215,18 +239,16 @@ static int msm_ringbuffer_flush(struct fd_ringbuffer *ring, uint32_t *last_start
+ 		fd_bo_del(&msm_bo->base);
+ 	}
+ 
+-	/* for each of the cmd buffers, clear their reloc's: */
+-	for (i = 0; i < msm_ring->nr_cmds; i++) {
+-		struct msm_ringbuffer *target_ring = to_msm_ringbuffer(msm_ring->rings[i]);
+-		target_ring->nr_relocs = 0;
+-	}
+-
+-	msm_ring->nr_cmds = 0;
+-	msm_ring->nr_bos = 0;
++	flush_reset(ring);
+ 
+ 	return ret;
+ }
+ 
++static void msm_ringbuffer_reset(struct fd_ringbuffer *ring)
++{
++	flush_reset(ring);
++}
++
+ static void msm_ringbuffer_emit_reloc(struct fd_ringbuffer *ring,
+ 		const struct fd_reloc *r)
+ {
+@@ -285,6 +307,7 @@ static void msm_ringbuffer_destroy(struct fd_ringbuffer *ring)
+ static struct fd_ringbuffer_funcs funcs = {
+ 		.hostptr = msm_ringbuffer_hostptr,
+ 		.flush = msm_ringbuffer_flush,
++		.reset = msm_ringbuffer_reset,
+ 		.emit_reloc = msm_ringbuffer_emit_reloc,
+ 		.emit_reloc_ring = msm_ringbuffer_emit_reloc_ring,
+ 		.destroy = msm_ringbuffer_destroy,
+-- 
+1.7.7.6
+
+
+From 1d86869da6820a698d48bdea5d42b0218edc4251 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fran=C3=A7ois=20Tigeot?= <ftigeot@wolfpond.org>
+Date: Mon, 17 Feb 2014 10:07:54 +0100
+Subject: [PATCH 05/20] Enable libkms by default on DragonFly
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: François Tigeot <ftigeot@wolfpond.org>
+---
+ configure.ac |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index d2d19d6..b7eef96 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -187,6 +187,7 @@ if test "x$LIBKMS" = xauto ; then
+ 		linux*)		LIBKMS="yes" ;;
+ 		freebsd* | kfreebsd*-gnu)
+ 				LIBKMS="yes" ;;
++		dragonfly*)	LIBKMS="yes" ;;
+ 		*)		LIBKMS="no" ;;
+ 	esac
+ fi
+-- 
+1.7.7.6
+
+
+From 5a3324638b3abb19b30e91ea4dfdd6e1764d6340 Mon Sep 17 00:00:00 2001
+From: Rob Clark <robclark@freedesktop.org>
+Date: Fri, 28 Feb 2014 09:24:39 -0500
+Subject: [PATCH 06/20] freedreno: simplify device creation
+
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/freedreno_device.c |   27 +--------------------------
+ freedreno/kgsl/kgsl_bo.c     |    1 -
+ 2 files changed, 1 insertions(+), 27 deletions(-)
+
+diff --git a/freedreno/freedreno_device.c b/freedreno/freedreno_device.c
+index 23e086b..532e65b 100644
+--- a/freedreno/freedreno_device.c
++++ b/freedreno/freedreno_device.c
+@@ -34,7 +34,6 @@
+ #include "freedreno_priv.h"
+ 
+ static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
+-static void * dev_table;
+ 
+ struct fd_device * kgsl_device_new(int fd);
+ struct fd_device * msm_device_new(int fd);
+@@ -77,7 +76,7 @@ init_cache_buckets(struct fd_device *dev)
+ 	}
+ }
+ 
+-static struct fd_device * fd_device_new_impl(int fd)
++struct fd_device * fd_device_new(int fd)
+ {
+ 	struct fd_device *dev;
+ 	drmVersionPtr version;
+@@ -112,29 +111,6 @@ static struct fd_device * fd_device_new_impl(int fd)
+ 	return dev;
+ }
+ 
+-struct fd_device * fd_device_new(int fd)
+-{
+-	struct fd_device *dev = NULL;
+-	int key = fd;
+-
+-	pthread_mutex_lock(&table_lock);
+-
+-	if (!dev_table)
+-		dev_table = drmHashCreate();
+-
+-	if (drmHashLookup(dev_table, key, (void **)&dev)) {
+-		dev = fd_device_new_impl(fd);
+-		if (dev)
+-			drmHashInsert(dev_table, key, dev);
+-	} else {
+-		dev = fd_device_ref(dev);
+-	}
+-
+-	pthread_mutex_unlock(&table_lock);
+-
+-	return dev;
+-}
+-
+ /* like fd_device_new() but creates it's own private dup() of the fd
+  * which is close()d when the device is finalized.
+  */
+@@ -156,7 +132,6 @@ static void fd_device_del_impl(struct fd_device *dev)
+ 	fd_cleanup_bo_cache(dev, 0);
+ 	drmHashDestroy(dev->handle_table);
+ 	drmHashDestroy(dev->name_table);
+-	drmHashDelete(dev_table, dev->fd);
+ 	if (dev->closefd)
+ 		close(dev->fd);
+ 	dev->funcs->destroy(dev);
+diff --git a/freedreno/kgsl/kgsl_bo.c b/freedreno/kgsl/kgsl_bo.c
+index 76d1f27..dd7b612 100644
+--- a/freedreno/kgsl/kgsl_bo.c
++++ b/freedreno/kgsl/kgsl_bo.c
+@@ -222,7 +222,6 @@ fail:
+ 	return NULL;
+ }
+ 
+-
+ uint32_t kgsl_bo_gpuaddr(struct kgsl_bo *kgsl_bo, uint32_t offset)
+ {
+ 	struct fd_bo *bo = &kgsl_bo->base;
+-- 
+1.7.7.6
+
+
+From cd1996470aa62116183485c5a3bf5754d69e3457 Mon Sep 17 00:00:00 2001
+From: Rob Clark <robclark@freedesktop.org>
+Date: Fri, 28 Feb 2014 09:25:10 -0500
+Subject: [PATCH 07/20] freedreno: fix null ptr in error path
+
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/freedreno_device.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/freedreno/freedreno_device.c b/freedreno/freedreno_device.c
+index 532e65b..598bdfb 100644
+--- a/freedreno/freedreno_device.c
++++ b/freedreno/freedreno_device.c
+@@ -117,7 +117,8 @@ struct fd_device * fd_device_new(int fd)
+ struct fd_device * fd_device_new_dup(int fd)
+ {
+ 	struct fd_device *dev = fd_device_new(dup(fd));
+-	dev->closefd = 1;
++	if (dev)
++		dev->closefd = 1;
+ 	return dev;
+ }
+ 
+-- 
+1.7.7.6
+
+
+From ee8c9a1383d4a50871e146ade2fe15b25f3377d4 Mon Sep 17 00:00:00 2001
+From: Rob Clark <robclark@freedesktop.org>
+Date: Fri, 28 Feb 2014 10:02:59 -0500
+Subject: [PATCH 08/20] freedreno/kgsl: don't even bother trying CREATE_FD
+
+Don't even bother trying DRM_KGSL_GEM_CREATE_FD.  It hasn't worked since
+(afaict) 2.6.35 kernels.  And in some cases seems to cause some
+problems.  Instead just allocate a minimum size dummy object (just for
+purposes of having a handle) and then mmap the framebuffer as user-mem
+(which is deprecated, but seems to still work.. and as far as I can tell
+is the best option for now).
+
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/kgsl/kgsl_bo.c |   16 ++++------------
+ 1 files changed, 4 insertions(+), 12 deletions(-)
+
+diff --git a/freedreno/kgsl/kgsl_bo.c b/freedreno/kgsl/kgsl_bo.c
+index dd7b612..19a1008 100644
+--- a/freedreno/kgsl/kgsl_bo.c
++++ b/freedreno/kgsl/kgsl_bo.c
+@@ -174,28 +174,18 @@ struct fd_bo * kgsl_bo_from_handle(struct fd_device *dev,
+ struct fd_bo * fd_bo_from_fbdev(struct fd_pipe *pipe,
+ 		int fbfd, uint32_t size)
+ {
+-	struct drm_kgsl_gem_create_fd req = {
+-			.fd = fbfd,
+-	};
+ 	struct fd_bo *bo;
+-	struct kgsl_bo *kgsl_bo;
+ 
+ 	if (!is_kgsl_pipe(pipe))
+ 		return NULL;
+ 
+-	if (drmCommandWriteRead(pipe->dev->fd, DRM_KGSL_GEM_CREATE_FD,
+-			&req, sizeof(req))) {
+-		return NULL;
+-	}
+-
+-	bo = fd_bo_from_handle(pipe->dev, req.handle, size);
+-	kgsl_bo = to_kgsl_bo(bo);
++	bo = fd_bo_new(pipe->dev, 1, 0);
+ 
+ 	/* this is fugly, but works around a bug in the kernel..
+ 	 * priv->memdesc.size never gets set, so getbufinfo ioctl
+ 	 * thinks the buffer hasn't be allocate and fails
+ 	 */
+-	if (bo && !kgsl_bo_gpuaddr(kgsl_bo, 0)) {
++	if (bo) {
+ 		void *fbmem = mmap(NULL, size, PROT_READ | PROT_WRITE,
+ 				MAP_SHARED, fbfd, 0);
+ 		struct kgsl_map_user_mem req = {
+@@ -204,7 +194,9 @@ struct fd_bo * fd_bo_from_fbdev(struct fd_pipe *pipe,
+ 				.offset  = 0,
+ 				.hostptr = (unsigned long)fbmem,
+ 		};
++		struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
+ 		int ret;
++
+ 		ret = ioctl(to_kgsl_pipe(pipe)->fd, IOCTL_KGSL_MAP_USER_MEM, &req);
+ 		if (ret) {
+ 			ERROR_MSG("mapping user mem failed: %s",
+-- 
+1.7.7.6
+
+
+From 230389a0d7b712f8ad0bab6edaacd8988e64d76b Mon Sep 17 00:00:00 2001
+From: Emil Velikov <emil.l.velikov@gmail.com>
+Date: Wed, 12 Mar 2014 20:45:45 +0000
+Subject: [PATCH 09/20] freedreno: do not leak drmVersion
+
+Cc: Rob Clark <robclark@freedesktop.org>
+Signed-off-by: Emil Velikov <emil.l.velikov@gmail.com>
+Reviewed-by: Rob Clark <robdclark@gmail.com>
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/freedreno_device.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/freedreno/freedreno_device.c b/freedreno/freedreno_device.c
+index 598bdfb..c34963c 100644
+--- a/freedreno/freedreno_device.c
++++ b/freedreno/freedreno_device.c
+@@ -98,6 +98,7 @@ struct fd_device * fd_device_new(int fd)
+ 		ERROR_MSG("unknown device: %s", version->name);
+ 		dev = NULL;
+ 	}
++	drmFreeVersion(version);
+ 
+ 	if (!dev)
+ 		return NULL;
+-- 
+1.7.7.6
+
+
+From 1cb5fc706cf5913d9dee33c939f65a23ecea17a5 Mon Sep 17 00:00:00 2001
+From: Rob Clark <robclark@freedesktop.org>
+Date: Wed, 19 Mar 2014 10:11:13 -0400
+Subject: [PATCH 10/20] freedreno: zero out unused field
+
+Since realloc() doesn't zero-init.
+
+Signed-off-by: Rob Clark <robclark@freedesktop.org>
+---
+ freedreno/msm/msm_ringbuffer.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/freedreno/msm/msm_ringbuffer.c b/freedreno/msm/msm_ringbuffer.c
+index c9c9256..e4d9561 100644
+--- a/freedreno/msm/msm_ringbuffer.c
++++ b/freedreno/msm/msm_ringbuffer.c
+@@ -143,6 +143,7 @@ static struct drm_msm_gem_submit_cmd * get_cmd(struct fd_ringbuffer *ring,
+ 		cmd->submit_idx = bo2idx(ring, target_bo, FD_RELOC_READ);
+ 		cmd->submit_offset = submit_offset;
+ 		cmd->size = size;
++		cmd->pad = 0;
+ 	}
+ 
+ 	return cmd;
+-- 
+1.7.7.6
+
+
+From d128cdecc2e08d7d85e46bbbd4a83c7523009013 Mon Sep 17 00:00:00 2001
+From: Paulo Zanoni <paulo.r.zanoni@intel.com>
+Date: Tue, 15 May 2012 18:38:30 -0300
+Subject: [PATCH 11/20] tests: add proptest
+
+A small program that allows us to see and modify properties.
+
+Signed-off-by: Paulo Zanoni <paulo.r.zanoni@intel.com>
+---
+ configure.ac               |    1 +
+ tests/Makefile.am          |    2 +-
+ tests/proptest/Makefile.am |   11 ++
+ tests/proptest/proptest.c  |  317 ++++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 330 insertions(+), 1 deletions(-)
+ create mode 100644 tests/proptest/Makefile.am
+ create mode 100644 tests/proptest/proptest.c
+
+diff --git a/configure.ac b/configure.ac
+index b7eef96..025ee74 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -387,6 +387,7 @@ AC_CONFIG_FILES([
+ 	tests/modeprint/Makefile
+ 	tests/modetest/Makefile
+ 	tests/kmstest/Makefile
++	tests/proptest/Makefile
+ 	tests/radeon/Makefile
+ 	tests/vbltest/Makefile
+ 	tests/exynos/Makefile
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index cd11491..889d265 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -10,7 +10,7 @@ check_PROGRAMS = \
+ 	dristat \
+ 	drmstat
+ 
+-SUBDIRS = modeprint
++SUBDIRS = modeprint proptest
+ 
+ if HAVE_LIBKMS
+ SUBDIRS += kmstest modetest
+diff --git a/tests/proptest/Makefile.am b/tests/proptest/Makefile.am
+new file mode 100644
+index 0000000..f81a3c0
+--- /dev/null
++++ b/tests/proptest/Makefile.am
+@@ -0,0 +1,11 @@
++AM_CFLAGS = \
++	-I$(top_srcdir)/include/drm \
++	-I$(top_srcdir)
++
++noinst_PROGRAMS = \
++	proptest
++
++proptest_SOURCES = \
++	proptest.c
++proptest_LDADD = \
++	$(top_builddir)/libdrm.la
+diff --git a/tests/proptest/proptest.c b/tests/proptest/proptest.c
+new file mode 100644
+index 0000000..1a6f225
+--- /dev/null
++++ b/tests/proptest/proptest.c
+@@ -0,0 +1,317 @@
++/*
++ * Copyright © 2012 Intel Corporation
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ *
++ * Authors:
++ *    Paulo Zanoni <paulo.r.zanoni@intel.com>
++ *
++ */
++
++#include <assert.h>
++#include <errno.h>
++#include <inttypes.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "xf86drm.h"
++#include "xf86drmMode.h"
++
++#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
++
++int fd;
++drmModeResPtr res = NULL;
++
++const char *connector_type_str(uint32_t type)
++{
++	switch (type) {
++	case DRM_MODE_CONNECTOR_Unknown:
++		return "Unknown";
++	case DRM_MODE_CONNECTOR_VGA:
++		return "VGA";
++	case DRM_MODE_CONNECTOR_DVII:
++		return "DVI-I";
++	case DRM_MODE_CONNECTOR_DVID:
++		return "DVI-D";
++	case DRM_MODE_CONNECTOR_DVIA:
++		return "DVI-A";
++	case DRM_MODE_CONNECTOR_Composite:
++		return "Composite";
++	case DRM_MODE_CONNECTOR_SVIDEO:
++		return "SVIDEO";
++	case DRM_MODE_CONNECTOR_LVDS:
++		return "LVDS";
++	case DRM_MODE_CONNECTOR_Component:
++		return "Component";
++	case DRM_MODE_CONNECTOR_9PinDIN:
++		return "9PinDin";
++	case DRM_MODE_CONNECTOR_DisplayPort:
++		return "DisplayPort";
++	case DRM_MODE_CONNECTOR_HDMIA:
++		return "HDMI-A";
++	case DRM_MODE_CONNECTOR_HDMIB:
++		return "HDMI-B";
++	case DRM_MODE_CONNECTOR_TV:
++		return "TV";
++	case DRM_MODE_CONNECTOR_eDP:
++		return "eDP";
++	default:
++		return "Invalid";
++	}
++}
++
++/* dump_blob and dump_prop shamelessly copied from ../modetest/modetest.c */
++static void
++dump_blob(uint32_t blob_id)
++{
++	uint32_t i;
++	unsigned char *blob_data;
++	drmModePropertyBlobPtr blob;
++
++	blob = drmModeGetPropertyBlob(fd, blob_id);
++	if (!blob)
++		return;
++
++	blob_data = blob->data;
++
++	for (i = 0; i < blob->length; i++) {
++		if (i % 16 == 0)
++			printf("\n\t\t\t");
++		printf("%.2hhx", blob_data[i]);
++	}
++	printf("\n");
++
++	drmModeFreePropertyBlob(blob);
++}
++
++static void
++dump_prop(uint32_t prop_id, uint64_t value)
++{
++	int i;
++	drmModePropertyPtr prop;
++
++	prop = drmModeGetProperty(fd, prop_id);
++
++	printf("\t%d", prop_id);
++	if (!prop) {
++		printf("\n");
++		return;
++	}
++
++	printf(" %s:\n", prop->name);
++
++	printf("\t\tflags:");
++	if (prop->flags & DRM_MODE_PROP_PENDING)
++		printf(" pending");
++	if (prop->flags & DRM_MODE_PROP_RANGE)
++		printf(" range");
++	if (prop->flags & DRM_MODE_PROP_IMMUTABLE)
++		printf(" immutable");
++	if (prop->flags & DRM_MODE_PROP_ENUM)
++		printf(" enum");
++	if (prop->flags & DRM_MODE_PROP_BLOB)
++		printf(" blob");
++	printf("\n");
++
++	if (prop->flags & DRM_MODE_PROP_RANGE) {
++		printf("\t\tvalues:");
++		for (i = 0; i < prop->count_values; i++)
++			printf(" %"PRIu64, prop->values[i]);
++		printf("\n");
++	}
++
++	if (prop->flags & DRM_MODE_PROP_ENUM) {
++		printf("\t\tenums:");
++		for (i = 0; i < prop->count_enums; i++)
++			printf(" %s=%llu", prop->enums[i].name,
++			       prop->enums[i].value);
++		printf("\n");
++	} else {
++		assert(prop->count_enums == 0);
++	}
++
++	if (prop->flags & DRM_MODE_PROP_BLOB) {
++		printf("\t\tblobs:\n");
++		for (i = 0; i < prop->count_blobs; i++)
++			dump_blob(prop->blob_ids[i]);
++		printf("\n");
++	} else {
++		assert(prop->count_blobs == 0);
++	}
++
++	printf("\t\tvalue:");
++	if (prop->flags & DRM_MODE_PROP_BLOB)
++		dump_blob(value);
++	else
++		printf(" %"PRIu64"\n", value);
++
++	drmModeFreeProperty(prop);
++}
++
++static void listObjectProperties(uint32_t id, uint32_t type)
++{
++	unsigned int i;
++	drmModeObjectPropertiesPtr props;
++
++	props = drmModeObjectGetProperties(fd, id, type);
++
++	if (!props) {
++		printf("\tNo properties: %s.\n", strerror(errno));
++		return;
++	}
++
++	for (i = 0; i < props->count_props; i++)
++		dump_prop(props->props[i], props->prop_values[i]);
++
++	drmModeFreeObjectProperties(props);
++}
++
++static void listConnectorProperties(void)
++{
++	int i;
++	drmModeConnectorPtr c;
++
++	for (i = 0; i < res->count_connectors; i++) {
++		c = drmModeGetConnector(fd, res->connectors[i]);
++
++		if (!c) {
++			fprintf(stderr, "Could not get connector %u: %s\n",
++				res->connectors[i], strerror(errno));
++			continue;
++		}
++
++		printf("Connector %u (%s-%u)\n", c->connector_id,
++		       connector_type_str(c->connector_type),
++		       c->connector_type_id);
++
++		listObjectProperties(c->connector_id,
++				     DRM_MODE_OBJECT_CONNECTOR);
++
++		drmModeFreeConnector(c);
++	}
++}
++
++static void listCrtcProperties(void)
++{
++	int i;
++	drmModeCrtcPtr c;
++
++	for (i = 0; i < res->count_crtcs; i++) {
++		c = drmModeGetCrtc(fd, res->crtcs[i]);
++
++		if (!c) {
++			fprintf(stderr, "Could not get crtc %u: %s\n",
++				res->crtcs[i], strerror(errno));
++			continue;
++		}
++
++		printf("CRTC %u\n", c->crtc_id);
++
++		listObjectProperties(c->crtc_id, DRM_MODE_OBJECT_CRTC);
++
++		drmModeFreeCrtc(c);
++	}
++}
++
++static void listAllProperties(void)
++{
++	listConnectorProperties();
++	listCrtcProperties();
++}
++
++static int setProperty(char *argv[])
++{
++	uint32_t obj_id, obj_type, prop_id;
++	uint64_t value;
++
++	obj_id = atoi(argv[1]);
++
++	if (!strcmp(argv[2], "connector")) {
++		obj_type = DRM_MODE_OBJECT_CONNECTOR;
++	} else if (!strcmp(argv[2], "crtc")) {
++		obj_type = DRM_MODE_OBJECT_CRTC;
++	} else {
++		fprintf(stderr, "Invalid object type.\n");
++		return 1;
++	}
++
++	prop_id = atoi(argv[3]);
++	value = atoll(argv[4]);
++
++	return drmModeObjectSetProperty(fd, obj_id, obj_type, prop_id, value);
++}
++
++static void printUsage(void)
++{
++	printf("Usage:\n"
++"  proptest\n"
++"  proptest [obj id] [obj type] [prop id] [value]\n"
++"\n"
++"The first form just prints all the existing properties. The second one is\n"
++"used to set the value of a specified property. The object type can be one of\n"
++"the following strings:\n"
++"  connector crtc\n"
++"\n"
++"Example:\n"
++"  proptest 7 connector 2 1\n"
++"will set property 2 of connector 7 to 1\n");
++}
++
++int main(int argc, char *argv[])
++{
++	char *modules[] = { "i915", "radeon", "nouveau", "vmwgfx", "omapdrm" };
++	unsigned int i, ret = 0;
++
++	for (i = 0; i < ARRAY_SIZE(modules); i++){
++		fd = drmOpen(modules[i], NULL);
++		if (fd >= 0) {
++			printf("Module %s loaded.\n", modules[i]);
++			break;
++		}
++	}
++
++	if (i == ARRAY_SIZE(modules)) {
++		fprintf(stderr, "Failed to load drm modules.\n");
++		return 1;
++	}
++
++	res = drmModeGetResources(fd);
++	if (!res) {
++		fprintf(stderr, "Failed to get resources: %s\n",
++			strerror(errno));
++		ret = 1;
++		goto done;
++	}
++
++	if (argc < 2) {
++		listAllProperties();
++	} else if (argc == 5) {
++		ret = setProperty(argv);
++	} else {
++		printUsage();
++		ret = 1;
++	}
++
++	drmModeFreeResources(res);
++done:
++	drmClose(fd);
++	return ret;
++}
+-- 
+1.7.7.6
+
+
+From cfd24ff5f9f8d82421f3582942ea6500c5a117ce Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Mon, 30 Apr 2012 17:41:07 +0300
+Subject: [PATCH 12/20] libkms: YUYV support
+
+---
+ libkms/intel.c  |    6 +++++-
+ libkms/libkms.h |    2 ++
+ 2 files changed, 7 insertions(+), 1 deletions(-)
+
+diff --git a/libkms/intel.c b/libkms/intel.c
+index abae452..571958c 100644
+--- a/libkms/intel.c
++++ b/libkms/intel.c
+@@ -52,7 +52,7 @@ intel_get_prop(struct kms_driver *kms, unsigned key, unsigned *out)
+ {
+ 	switch (key) {
+ 	case KMS_BO_TYPE:
+-		*out = KMS_BO_TYPE_SCANOUT_X8R8G8B8 | KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8;
++		*out = KMS_BO_TYPE_SCANOUT_X8R8G8B8 | KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8 | KMS_BO_TYPE_SCANOUT_YUYV;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+@@ -100,6 +100,10 @@ intel_bo_create(struct kms_driver *kms,
+ 		pitch = width * 4;
+ 		pitch = (pitch + 512 - 1) & ~(512 - 1);
+ 		size = pitch * ((height + 4 - 1) & ~(4 - 1));
++	} else if (type == KMS_BO_TYPE_SCANOUT_YUYV) {
++		pitch = width * 2;
++		pitch = (pitch + 64 - 1) & ~(64 - 1);
++		size = pitch * height;
+ 	} else {
+ 		free(bo);
+ 		return -EINVAL;
+diff --git a/libkms/libkms.h b/libkms/libkms.h
+index c00b159..2b4abce 100644
+--- a/libkms/libkms.h
++++ b/libkms/libkms.h
+@@ -63,6 +63,8 @@ enum kms_bo_type
+ #define KMS_BO_TYPE_SCANOUT_X8R8G8B8 KMS_BO_TYPE_SCANOUT_X8R8G8B8
+ 	KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8 =  (1 << 1),
+ #define KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8 KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8
++	KMS_BO_TYPE_SCANOUT_YUYV = (1 << 2),
++#define KMS_BO_TYPE_SCANOUT_YUYV KMS_BO_TYPE_SCANOUT_YUYV
+ };
+ 
+ int kms_create(int fd, struct kms_driver **out);
+-- 
+1.7.7.6
+
+
+From 011c5124c98254dc24868b93c413e157182d6c74 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Fri, 18 May 2012 15:52:09 +0300
+Subject: [PATCH 13/20] libdrm: atomic mode set
+
+---
+ include/drm/drm.h      |    1 +
+ include/drm/drm_mode.h |   13 +++
+ xf86drmMode.c          |  270 ++++++++++++++++++++++++++++++++++++++++++++++++
+ xf86drmMode.h          |   19 ++++
+ 4 files changed, 303 insertions(+), 0 deletions(-)
+
+diff --git a/include/drm/drm.h b/include/drm/drm.h
+index f0b4c16..17334fc 100644
+--- a/include/drm/drm.h
++++ b/include/drm/drm.h
+@@ -750,6 +750,7 @@ struct drm_prime_handle {
+ #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES	DRM_IOWR(0xB9, struct drm_mode_obj_get_properties)
+ #define DRM_IOCTL_MODE_OBJ_SETPROPERTY	DRM_IOWR(0xBA, struct drm_mode_obj_set_property)
+ #define DRM_IOCTL_MODE_CURSOR2		DRM_IOWR(0xBB, struct drm_mode_cursor2)
++#define DRM_IOCTL_MODE_ATOMIC  DRM_IOWR(0xBB, struct drm_mode_atomic)
+ 
+ /**
+  * Device specific ioctls should only be in their respective headers
+diff --git a/include/drm/drm_mode.h b/include/drm/drm_mode.h
+index 76fd76b..5bedc4a 100644
+--- a/include/drm/drm_mode.h
++++ b/include/drm/drm_mode.h
+@@ -487,4 +487,17 @@ struct drm_mode_destroy_dumb {
+ 	__u32 handle;
+ };
+ 
++#define DRM_MODE_ATOMIC_TEST_ONLY (1<<0)
++
++/* FIXME come up with some sane error reporting mechanism? */
++struct drm_mode_atomic {
++	__u32 flags;
++	__u32 count_objs;
++	__u64 objs_ptr;
++	__u64 count_props_ptr;
++	__u64 props_ptr;
++	__u64 prop_values_ptr;
++	__u64 blob_values_ptr;
++};
++
+ #endif
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index a6bb2ee..ad863a2 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -40,6 +40,7 @@
+ #include <stdint.h>
+ #include <sys/ioctl.h>
+ #include <stdio.h>
++#include <stdbool.h>
+ 
+ #ifdef HAVE_CONFIG_H
+ #include "config.h"
+@@ -1127,3 +1128,272 @@ int drmModeObjectSetProperty(int fd, uint32_t object_id, uint32_t object_type,
+ 
+ 	return DRM_IOCTL(fd, DRM_IOCTL_MODE_OBJ_SETPROPERTY, &prop);
+ }
++
++typedef struct _drmModePropertySetItem drmModePropertySetItem, *drmModePropertySetItemPtr;
++
++struct _drmModePropertySetItem {
++	uint32_t object_id;
++	uint32_t property_id;
++	bool is_blob;
++	uint64_t value;
++	void *blob;
++	drmModePropertySetItemPtr next;
++};
++
++struct _drmModePropertySet {
++	unsigned int count_objs;
++	unsigned int count_props;
++	unsigned int count_blobs;
++	drmModePropertySetItem list;
++};
++
++drmModePropertySetPtr drmModePropertySetAlloc(void)
++{
++	drmModePropertySetPtr set;
++
++	set = drmMalloc(sizeof *set);
++	if (!set)
++		return NULL;
++
++	set->list.next = NULL;
++	set->count_props = 0;
++	set->count_objs = 0;
++
++	return set;
++}
++
++int drmModePropertySetAdd(drmModePropertySetPtr set,
++			  uint32_t object_id,
++			  uint32_t property_id,
++			  uint64_t value)
++{
++	drmModePropertySetItemPtr prev = &set->list;
++	bool new_obj = false;
++
++	/* keep it sorted by object_id and property_id */
++	while (prev->next) {
++		if (prev->next->object_id > object_id) {
++			new_obj = true;
++			break;
++		}
++
++		if (prev->next->object_id == object_id &&
++		    prev->next->property_id >= property_id)
++			break;
++
++		prev = prev->next;
++	}
++
++	if (!prev->next &&
++	    (prev == &set->list || prev->object_id != object_id))
++		new_obj = true;
++
++	/* replace or add? */
++	if (prev->next &&
++	    prev->next->object_id == object_id &&
++	    prev->next->property_id == property_id) {
++		drmModePropertySetItemPtr item = prev->next;
++
++		if (item->is_blob)
++			return -EINVAL;
++
++		item->value = value;
++	} else {
++		drmModePropertySetItemPtr item;
++
++		item = drmMalloc(sizeof *item);
++		if (!item)
++			return -1;
++
++		item->object_id = object_id;
++		item->property_id = property_id;
++		item->value = value;
++		item->is_blob = false;
++		item->blob = NULL;
++
++		item->next = prev->next;
++		prev->next = item;
++
++		set->count_props++;
++	}
++
++	if (new_obj)
++		set->count_objs++;
++
++	return 0;
++}
++
++int drmModePropertySetAddBlob(drmModePropertySetPtr set,
++			      uint32_t object_id,
++			      uint32_t property_id,
++			      uint64_t length,
++			      void *data)
++{
++	drmModePropertySetItemPtr prev = &set->list;
++	bool new_obj = false;
++
++	/* keep it sorted by object_id and property_id */
++	while (prev->next) {
++		if (prev->next->object_id > object_id) {
++			new_obj = true;
++			break;
++		}
++
++		if (prev->next->object_id == object_id &&
++		    prev->next->property_id >= property_id)
++			break;
++
++		prev = prev->next;
++	}
++
++	if (!prev->next &&
++	    (prev == &set->list || prev->object_id != object_id))
++		new_obj = true;
++
++	/* replace or add? */
++	if (prev->next &&
++	    prev->next->object_id == object_id &&
++	    prev->next->property_id == property_id) {
++		drmModePropertySetItemPtr item = prev->next;
++
++		if (!item->is_blob)
++			return -EINVAL;
++
++		item->value = length;
++		item->blob = data;
++	} else {
++		drmModePropertySetItemPtr item;
++
++		item = drmMalloc(sizeof *item);
++		if (!item)
++			return -1;
++
++		item->object_id = object_id;
++		item->property_id = property_id;
++		item->is_blob = true;
++		item->value = length;
++		item->blob = data;
++
++		item->next = prev->next;
++		prev->next = item;
++
++		set->count_props++;
++		set->count_blobs++;
++	}
++
++	if (new_obj)
++		set->count_objs++;
++
++	return 0;
++}
++
++void drmModePropertySetFree(drmModePropertySetPtr set)
++{
++	drmModePropertySetItemPtr item;
++
++	if (!set)
++		return;
++
++	item = set->list.next;
++
++	while (item) {
++		drmModePropertySetItemPtr next = item->next;
++
++		drmFree(item);
++
++		item = next;
++	}
++
++	drmFree(set);
++}
++
++int drmModePropertySetCommit(int fd, uint32_t flags, drmModePropertySetPtr set)
++{
++	drmModePropertySetItemPtr item;
++	uint32_t *objs_ptr = NULL;
++	uint32_t *count_props_ptr = NULL;
++	uint32_t *props_ptr = NULL;
++	uint64_t *prop_values_ptr = NULL;
++	uint64_t *blob_values_ptr = NULL;
++	struct drm_mode_atomic atomic = { 0 };
++	unsigned int obj_idx = 0;
++	unsigned int prop_idx = 0;
++	unsigned int blob_idx = 0;
++	int ret = -1;
++
++	if (!set)
++		return -1;
++
++	objs_ptr = drmMalloc(set->count_objs * sizeof objs_ptr[0]);
++	if (!objs_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	count_props_ptr = drmMalloc(set->count_objs * sizeof count_props_ptr[0]);
++	if (!count_props_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	props_ptr = drmMalloc(set->count_props * sizeof props_ptr[0]);
++	if (!props_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	prop_values_ptr = drmMalloc(set->count_props * sizeof prop_values_ptr[0]);
++	if (!prop_values_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	blob_values_ptr = drmMalloc(set->count_blobs * sizeof blob_values_ptr[0]);
++	if (!blob_values_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	item = set->list.next;
++
++	while (item) {
++		int count_props = 0;
++		drmModePropertySetItemPtr next = item;
++
++		objs_ptr[obj_idx] = item->object_id;
++
++		while (next && next->object_id == item->object_id) {
++			props_ptr[prop_idx] = next->property_id;
++			prop_values_ptr[prop_idx] = next->value;
++			prop_idx++;
++
++			if (next->is_blob)
++				blob_values_ptr[blob_idx++] = VOID2U64(next->blob);
++
++			count_props++;
++
++			next = next->next;
++		}
++
++		count_props_ptr[obj_idx++] = count_props;
++
++		item = next;
++	}
++
++	atomic.count_objs = set->count_objs;
++	atomic.flags = flags;
++	atomic.objs_ptr = VOID2U64(objs_ptr);
++	atomic.count_props_ptr = VOID2U64(count_props_ptr);
++	atomic.props_ptr = VOID2U64(props_ptr);
++	atomic.prop_values_ptr = VOID2U64(prop_values_ptr);
++
++	ret = DRM_IOCTL(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
++
++out:
++	drmFree(objs_ptr);
++	drmFree(count_props_ptr);
++	drmFree(props_ptr);
++	drmFree(prop_values_ptr);
++	drmFree(blob_values_ptr);
++	return ret;
++}
+diff --git a/xf86drmMode.h b/xf86drmMode.h
+index 9bcb1d1..d57a0b3 100644
+--- a/xf86drmMode.h
++++ b/xf86drmMode.h
+@@ -458,6 +458,25 @@ extern int drmModeObjectSetProperty(int fd, uint32_t object_id,
+ 				    uint32_t object_type, uint32_t property_id,
+ 				    uint64_t value);
+ 
++
++typedef struct _drmModePropertySet drmModePropertySet, *drmModePropertySetPtr;
++
++extern drmModePropertySetPtr drmModePropertySetAlloc(void);
++
++extern int drmModePropertySetAdd(drmModePropertySetPtr set,
++				 uint32_t object_id,
++				 uint32_t property_id,
++				 uint64_t value);
++extern int drmModePropertySetAddBlob(drmModePropertySetPtr set,
++				     uint32_t object_id,
++				     uint32_t property_id,
++				     uint64_t length,
++				     void *blob);
++
++extern int drmModePropertySetCommit(int fd, uint32_t flags, drmModePropertySetPtr set);
++
++extern void drmModePropertySetFree(drmModePropertySetPtr set);
++
+ #if defined(__cplusplus) || defined(c_plusplus)
+ }
+ #endif
+-- 
+1.7.7.6
+
+
+From ad1424aad257838ba87097b05e090e642da6d903 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Fri, 8 Jun 2012 13:28:16 +0300
+Subject: [PATCH 14/20] modetest: Print newline for empty blobs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+---
+ tests/modetest/modetest.c |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/tests/modetest/modetest.c b/tests/modetest/modetest.c
+index bc9c998..e6d2ec8 100644
+--- a/tests/modetest/modetest.c
++++ b/tests/modetest/modetest.c
+@@ -261,8 +261,10 @@ static void dump_blob(struct device *dev, uint32_t blob_id)
+ 	drmModePropertyBlobPtr blob;
+ 
+ 	blob = drmModeGetPropertyBlob(dev->fd, blob_id);
+-	if (!blob)
++	if (!blob) {
++		printf("\n");
+ 		return;
++	}
+ 
+ 	blob_data = blob->data;
+ 
+-- 
+1.7.7.6
+
+
+From 9923a0c872ec0e015b3be9ad48228c4c30501388 Mon Sep 17 00:00:00 2001
+From: Ander Conselvan de Oliveira <conselvan2@gmail.com>
+Date: Fri, 27 Jul 2012 13:30:51 +0300
+Subject: [PATCH 15/20] libdrm: Fix bogus increment of a property set object
+ count
+
+If drmModePropertySetAdd() is called with the following property pairs
+it will mistakenly increase the object count:
+
+  (4, 1), (5,1), (4, 2).
+
+When adding the third pair, the new_obj variable would be set when prev
+points to (4, 1) since it disregarded the value of the previous item.
+
+This patch changes the logic so that the obj count is incresed only if
+both the previous and next items have differing object ids.
+---
+ xf86drmMode.c |   16 ++++++----------
+ 1 files changed, 6 insertions(+), 10 deletions(-)
+
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index ad863a2..bd987ca 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -1172,10 +1172,8 @@ int drmModePropertySetAdd(drmModePropertySetPtr set,
+ 
+ 	/* keep it sorted by object_id and property_id */
+ 	while (prev->next) {
+-		if (prev->next->object_id > object_id) {
+-			new_obj = true;
++		if (prev->next->object_id > object_id)
+ 			break;
+-		}
+ 
+ 		if (prev->next->object_id == object_id &&
+ 		    prev->next->property_id >= property_id)
+@@ -1184,8 +1182,8 @@ int drmModePropertySetAdd(drmModePropertySetPtr set,
+ 		prev = prev->next;
+ 	}
+ 
+-	if (!prev->next &&
+-	    (prev == &set->list || prev->object_id != object_id))
++	if ((prev == &set->list || prev->object_id != object_id) &&
++	    (!prev->next || prev->next->object_id != object_id))
+ 		new_obj = true;
+ 
+ 	/* replace or add? */
+@@ -1234,10 +1232,8 @@ int drmModePropertySetAddBlob(drmModePropertySetPtr set,
+ 
+ 	/* keep it sorted by object_id and property_id */
+ 	while (prev->next) {
+-		if (prev->next->object_id > object_id) {
+-			new_obj = true;
++		if (prev->next->object_id > object_id)
+ 			break;
+-		}
+ 
+ 		if (prev->next->object_id == object_id &&
+ 		    prev->next->property_id >= property_id)
+@@ -1246,8 +1242,8 @@ int drmModePropertySetAddBlob(drmModePropertySetPtr set,
+ 		prev = prev->next;
+ 	}
+ 
+-	if (!prev->next &&
+-	    (prev == &set->list || prev->object_id != object_id))
++	if ((prev == &set->list || prev->object_id != object_id) &&
++	    (!prev->next || prev->next->object_id != object_id))
+ 		new_obj = true;
+ 
+ 	/* replace or add? */
+-- 
+1.7.7.6
+
+
+From f56ad3af5e7781ef5ea7ee3e31fd4c3063d2d921 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Thu, 13 Sep 2012 17:45:00 +0300
+Subject: [PATCH 16/20] Add atomic completion event support
+
+---
+ include/drm/drm.h      |   11 +++++++++++
+ include/drm/drm_mode.h |    2 ++
+ xf86drm.h              |   10 +++++++++-
+ xf86drmMode.c          |   20 ++++++++++++++++++--
+ xf86drmMode.h          |    3 ++-
+ 5 files changed, 42 insertions(+), 4 deletions(-)
+
+diff --git a/include/drm/drm.h b/include/drm/drm.h
+index 17334fc..407c118 100644
+--- a/include/drm/drm.h
++++ b/include/drm/drm.h
+@@ -782,6 +782,7 @@ struct drm_event {
+ 
+ #define DRM_EVENT_VBLANK 0x01
+ #define DRM_EVENT_FLIP_COMPLETE 0x02
++#define DRM_EVENT_ATOMIC_COMPLETE 0x03
+ 
+ struct drm_event_vblank {
+ 	struct drm_event base;
+@@ -792,6 +793,16 @@ struct drm_event_vblank {
+ 	__u32 reserved;
+ };
+ 
++struct drm_event_atomic {
++	struct drm_event base;
++	__u64 user_data;
++	__u32 tv_sec;
++	__u32 tv_usec;
++	__u32 sequence;
++	__u32 obj_id;
++	__u32 old_fb_id;
++};
++
+ #define DRM_CAP_DUMB_BUFFER 0x1
+ #define DRM_CAP_VBLANK_HIGH_CRTC   0x2
+ #define DRM_CAP_DUMB_PREFERRED_DEPTH 0x3
+diff --git a/include/drm/drm_mode.h b/include/drm/drm_mode.h
+index 5bedc4a..5df9337 100644
+--- a/include/drm/drm_mode.h
++++ b/include/drm/drm_mode.h
+@@ -488,6 +488,7 @@ struct drm_mode_destroy_dumb {
+ };
+ 
+ #define DRM_MODE_ATOMIC_TEST_ONLY (1<<0)
++#define DRM_MODE_ATOMIC_EVENT (1<<1)
+ 
+ /* FIXME come up with some sane error reporting mechanism? */
+ struct drm_mode_atomic {
+@@ -498,6 +499,7 @@ struct drm_mode_atomic {
+ 	__u64 props_ptr;
+ 	__u64 prop_values_ptr;
+ 	__u64 blob_values_ptr;
++	__u64 user_data;
+ };
+ 
+ #endif
+diff --git a/xf86drm.h b/xf86drm.h
+index 5e170f8..384067b 100644
+--- a/xf86drm.h
++++ b/xf86drm.h
+@@ -709,7 +709,7 @@ extern void drmMsg(const char *format, ...);
+ extern int drmSetMaster(int fd);
+ extern int drmDropMaster(int fd);
+ 
+-#define DRM_EVENT_CONTEXT_VERSION 2
++#define DRM_EVENT_CONTEXT_VERSION 3
+ 
+ typedef struct _drmEventContext {
+ 
+@@ -729,6 +729,14 @@ typedef struct _drmEventContext {
+ 				  unsigned int tv_usec,
+ 				  void *user_data);
+ 
++	void (*atomic_handler)(int fd,
++			       unsigned int sequence,
++			       unsigned int tv_sec,
++			       unsigned int tv_usec,
++			       uint32_t obj_id,
++			       uint32_t old_fb_id,
++			       void *user_data);
++
+ } drmEventContext, *drmEventContextPtr;
+ 
+ extern int drmHandleEvent(int fd, drmEventContextPtr evctx);
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index bd987ca..b9bbf9c 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -846,7 +846,8 @@ int drmHandleEvent(int fd, drmEventContextPtr evctx)
+ 	int len, i;
+ 	struct drm_event *e;
+ 	struct drm_event_vblank *vblank;
+-	
++	struct drm_event_atomic *atomic;
++
+ 	/* The DRM read semantics guarantees that we always get only
+ 	 * complete events. */
+ 
+@@ -882,6 +883,19 @@ int drmHandleEvent(int fd, drmEventContextPtr evctx)
+ 						 vblank->tv_usec,
+ 						 U642VOID (vblank->user_data));
+ 			break;
++		case DRM_EVENT_ATOMIC_COMPLETE:
++			if (evctx->version < 3 ||
++			    evctx->atomic_handler == NULL)
++				break;
++			atomic = (struct drm_event_atomic *) e;
++			evctx->atomic_handler(fd,
++					      atomic->sequence,
++					      atomic->tv_sec,
++					      atomic->tv_usec,
++					      atomic->obj_id,
++					      atomic->old_fb_id,
++					      U642VOID (atomic->user_data));
++			break;
+ 		default:
+ 			break;
+ 		}
+@@ -1303,7 +1317,8 @@ void drmModePropertySetFree(drmModePropertySetPtr set)
+ 	drmFree(set);
+ }
+ 
+-int drmModePropertySetCommit(int fd, uint32_t flags, drmModePropertySetPtr set)
++int drmModePropertySetCommit(int fd, uint32_t flags, void *user_data,
++			     drmModePropertySetPtr set)
+ {
+ 	drmModePropertySetItemPtr item;
+ 	uint32_t *objs_ptr = NULL;
+@@ -1382,6 +1397,7 @@ int drmModePropertySetCommit(int fd, uint32_t flags, drmModePropertySetPtr set)
+ 	atomic.count_props_ptr = VOID2U64(count_props_ptr);
+ 	atomic.props_ptr = VOID2U64(props_ptr);
+ 	atomic.prop_values_ptr = VOID2U64(prop_values_ptr);
++	atomic.user_data = VOID2U64(user_data);
+ 
+ 	ret = DRM_IOCTL(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
+ 
+diff --git a/xf86drmMode.h b/xf86drmMode.h
+index d57a0b3..7d52534 100644
+--- a/xf86drmMode.h
++++ b/xf86drmMode.h
+@@ -473,7 +473,8 @@ extern int drmModePropertySetAddBlob(drmModePropertySetPtr set,
+ 				     uint64_t length,
+ 				     void *blob);
+ 
+-extern int drmModePropertySetCommit(int fd, uint32_t flags, drmModePropertySetPtr set);
++extern int drmModePropertySetCommit(int fd, uint32_t flags,
++				    void *user_data, drmModePropertySetPtr set);
+ 
+ extern void drmModePropertySetFree(drmModePropertySetPtr set);
+ 
+-- 
+1.7.7.6
+
+
+From c29e627a7a2aaf734b707c92c07d64462bf21d4c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Thu, 27 Sep 2012 15:42:21 +0300
+Subject: [PATCH 17/20] Add DRM_MODE_ATOMIC_NONBLOCK flag
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+---
+ include/drm/drm_mode.h |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/include/drm/drm_mode.h b/include/drm/drm_mode.h
+index 5df9337..747eecc 100644
+--- a/include/drm/drm_mode.h
++++ b/include/drm/drm_mode.h
+@@ -489,6 +489,7 @@ struct drm_mode_destroy_dumb {
+ 
+ #define DRM_MODE_ATOMIC_TEST_ONLY (1<<0)
+ #define DRM_MODE_ATOMIC_EVENT (1<<1)
++#define DRM_MODE_ATOMIC_NONBLOCK (1<<2)
+ 
+ /* FIXME come up with some sane error reporting mechanism? */
+ struct drm_mode_atomic {
+-- 
+1.7.7.6
+
+
+From a05cd14dd7f326d45721b28d0b75fecffa0403e5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Mon, 1 Oct 2012 17:50:06 +0300
+Subject: [PATCH 18/20] Actually pass the blob_values_ptr in the atomic ioctl
+
+---
+ xf86drmMode.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index b9bbf9c..d8ba364 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -1397,6 +1397,7 @@ int drmModePropertySetCommit(int fd, uint32_t flags, void *user_data,
+ 	atomic.count_props_ptr = VOID2U64(count_props_ptr);
+ 	atomic.props_ptr = VOID2U64(props_ptr);
+ 	atomic.prop_values_ptr = VOID2U64(prop_values_ptr);
++	atomic.blob_values_ptr = VOID2U64(blob_values_ptr);
+ 	atomic.user_data = VOID2U64(user_data);
+ 
+ 	ret = DRM_IOCTL(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
+-- 
+1.7.7.6
+
+
+From 4a7ed9796a98b45fc0c265bea17a722d2bf236df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Wed, 10 Oct 2012 15:38:29 +0300
+Subject: [PATCH 19/20] Add drmModeRangePropertyIsSigned() helper
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+drmModeRangePropertyIsSigned() can tell you whether a property
+is a signed range property.
+
+Q: is it OK to use stdbool here?
+
+Signed-off-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+---
+ xf86drmMode.c |    8 ++++++++
+ xf86drmMode.h |    3 +++
+ 2 files changed, 11 insertions(+), 0 deletions(-)
+
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index d8ba364..ad0efa6 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -663,6 +663,14 @@ void drmModeFreeProperty(drmModePropertyPtr ptr)
+ 	drmFree(ptr);
+ }
+ 
++bool drmModeRangePropertyIsSigned(const drmModePropertyRes *prop)
++{
++	return prop &&
++		prop->flags & DRM_MODE_PROP_RANGE &&
++		prop->count_values == 2 &&
++		prop->values[0] > prop->values[1];
++}
++
+ drmModePropertyBlobPtr drmModeGetPropertyBlob(int fd, uint32_t blob_id)
+ {
+ 	struct drm_mode_get_blob blob;
+diff --git a/xf86drmMode.h b/xf86drmMode.h
+index 7d52534..5c48dba 100644
+--- a/xf86drmMode.h
++++ b/xf86drmMode.h
+@@ -40,6 +40,7 @@
+ extern "C" {
+ #endif
+ 
++#include <stdbool.h>
+ #include <drm.h>
+ 
+ /*
+@@ -428,6 +429,8 @@ extern int drmModeDetachMode(int fd, uint32_t connectorId, drmModeModeInfoPtr mo
+ extern drmModePropertyPtr drmModeGetProperty(int fd, uint32_t propertyId);
+ extern void drmModeFreeProperty(drmModePropertyPtr ptr);
+ 
++extern bool drmModeRangePropertyIsSigned(const drmModePropertyRes *prop);
++
+ extern drmModePropertyBlobPtr drmModeGetPropertyBlob(int fd, uint32_t blob_id);
+ extern void drmModeFreePropertyBlob(drmModePropertyBlobPtr ptr);
+ extern int drmModeConnectorSetProperty(int fd, uint32_t connector_id, uint32_t property_id,
+-- 
+1.7.7.6
+
+
+From 8b2b3324c1ffe54b1ca7cdf8219e9bf6ce5ae7ee Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Syrj=C3=A4l=C3=A4?= <ville.syrjala@linux.intel.com>
+Date: Fri, 8 Jun 2012 13:23:56 +0300
+Subject: [PATCH 20/20] modetest: Handle signed range props
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+---
+ tests/modetest/modetest.c |   17 +++++++++++++----
+ 1 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/tests/modetest/modetest.c b/tests/modetest/modetest.c
+index e6d2ec8..dba8c67 100644
+--- a/tests/modetest/modetest.c
++++ b/tests/modetest/modetest.c
+@@ -307,8 +307,13 @@ static void dump_prop(struct device *dev, drmModePropertyPtr prop,
+ 
+ 	if (prop->flags & DRM_MODE_PROP_RANGE) {
+ 		printf("\t\tvalues:");
+-		for (i = 0; i < prop->count_values; i++)
+-			printf(" %"PRIu64, prop->values[i]);
++		if (drmModeRangePropertyIsSigned(prop)) {
++			printf(" %"PRId64, (int64_t) prop->values[0]);
++			printf(" %"PRId64, (int64_t) prop->values[1]);
++		} else {
++			for (i = 0; i < prop->count_values; i++)
++				printf(" %"PRIu64, prop->values[i]);
++		}
+ 		printf("\n");
+ 	}
+ 
+@@ -340,8 +345,12 @@ static void dump_prop(struct device *dev, drmModePropertyPtr prop,
+ 	printf("\t\tvalue:");
+ 	if (prop->flags & DRM_MODE_PROP_BLOB)
+ 		dump_blob(dev, value);
+-	else
+-		printf(" %"PRIu64"\n", value);
++	else {
++		if (drmModeRangePropertyIsSigned(prop))
++			printf(" %"PRId64"\n", (int64_t) value);
++		else
++			printf(" %"PRIu64"\n", value);
++	}
+ }
+ 
+ static void dump_connectors(struct device *dev)
+-- 
+1.7.7.6
+

@@ -1,0 +1,53 @@
+--- libdrm-2.4.39/intel/intel_bufmgr_gem.c
++++ libdrm-2.4.39_patched/intel/intel_bufmgr_gem.c
+@@ -3111,6 +3111,9 @@
+ 		 */
+ 		bufmgr_gem->has_llc = (IS_GEN6(bufmgr_gem->pci_device) |
+ 				IS_GEN7(bufmgr_gem->pci_device));
++       		if(IS_VALLEYVIEW(bufmgr_gem->pci_device))
++           		bufmgr_gem->has_llc = 0;
++
+ 	} else
+ 		bufmgr_gem->has_llc = ret == 0;
+ 
+--- libdrm-2.4.39/intel/intel_chipset.h
++++ libdrm-2.4.39_patched/intel/intel_chipset.h
+@@ -43,6 +43,13 @@
+ #define PCI_CHIP_IVYBRIDGE_GT2		0x0162
+ #define PCI_CHIP_IVYBRIDGE_M_GT1	0x0156 /* mobile */
+ #define PCI_CHIP_IVYBRIDGE_M_GT2	0x0166
++
++#define PCI_CHIP_VLV1              0x0F30
++#define PCI_CHIP_VLV2              0x0F31
++#define PCI_CHIP_VLV3              0x0F32
++#define PCI_CHIP_VLV4              0x0F33
++
++
+ #define PCI_CHIP_IVYBRIDGE_S		0x015a /* server */
+ #define PCI_CHIP_IVYBRIDGE_S_GT2	0x016a /* server */
+ 
+@@ -154,8 +161,10 @@
+ 			 dev == PCI_CHIP_SANDYBRIDGE_S)
+ 
+ #define IS_GEN7(devid)          (IS_IVYBRIDGE(devid) || \
+-                                 IS_HASWELL(devid))
++                                 IS_HASWELL(devid) || \
++                                 IS_VALLEYVIEW(devid))
+ 
++
+ #define IS_IVYBRIDGE(dev)	(dev == PCI_CHIP_IVYBRIDGE_GT1 || \
+ 				 dev == PCI_CHIP_IVYBRIDGE_GT2 || \
+ 				 dev == PCI_CHIP_IVYBRIDGE_M_GT1 || \
+@@ -215,5 +224,12 @@
+ 		     IS_GEN5(dev) ||				\
+ 		     IS_GEN6(dev) ||				\
+ 		     IS_GEN7(dev))
++
++
++#define IS_VALLEYVIEW(dev) ( dev == PCI_CHIP_VLV1 || \
++                     dev == PCI_CHIP_VLV2 || \
++                     dev == PCI_CHIP_VLV3 || \
++                     dev == PCI_CHIP_VLV4 )
++
+ 
+ #endif /* _INTEL_CHIPSET_H */

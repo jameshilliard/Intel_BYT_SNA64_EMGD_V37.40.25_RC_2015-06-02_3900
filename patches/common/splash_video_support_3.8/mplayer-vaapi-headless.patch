@@ -1,0 +1,281 @@
+From d9f75106e541291a3215543afee540d8244cef9f Mon Sep 17 00:00:00 2001
+From: vincent cheah beng keat <vincent.beng.keat.cheah@intel.com>
+Date: Wed, 17 Sep 2014 11:04:34 +0800
+Subject: [PATCH] Mplayer headless patch for splash video
+
+This the patch to get splash video feature to work on EMGD
+kernel version : 3.8
+Libva version  : 1.1.1
+Intel-va-driver version : 1.2.2
+
+Signed-off-by: Vincent Cheah <vincent.beng.keat.cheah@intel.com>
+---
+ Makefile           |  2 +-
+ configure          |  2 +-
+ libvo/drm_common.c | 82 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ libvo/drm_common.h | 25 +++++++++++++++++
+ libvo/vo_vaapi.c   | 37 +++++++++++++++++++-----
+ mplayer.c          |  3 +-
+ 6 files changed, 141 insertions(+), 10 deletions(-)
+ create mode 100644 libvo/drm_common.c
+ create mode 100644 libvo/drm_common.h
+
+diff --git a/Makefile b/Makefile
+index a4bf6b2..ebc384b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -579,7 +579,7 @@ SRCS_MPLAYER-$(TDFXVID)       += libvo/vo_tdfx_vid.c
+ SRCS_MPLAYER-$(TGA)           += libvo/vo_tga.c
+ SRCS_MPLAYER-$(V4L2)          += libvo/vo_v4l2.c
+ SRCS_MPLAYER-$(V4L2)          += libao2/ao_v4l2.c
+-SRCS_MPLAYER-$(VAAPI)         += libvo/vo_vaapi.c
++SRCS_MPLAYER-$(VAAPI)         += libvo/vo_vaapi.c libvo/drm_common.c
+ SRCS_MPLAYER-$(VDPAU)         += libvo/vo_vdpau.c
+ SRCS_MPLAYER-$(VESA)          += libvo/gtf.c                            \
+                                  libvo/vo_vesa.c                        \
+diff --git a/configure b/configure
+index 718de25..bc99a02 100755
+--- a/configure
++++ b/configure
+@@ -5981,7 +5981,7 @@ if test "$_vaapi" = yes ; then
+   def_vaapi='#define CONFIG_VAAPI 1'
+   extra_cflags="$extra_cflags $_vaapiinc"
+   libs_mencoder="$libs_mencoder $_vaapilib -lva"
+-  libs_mplayer="$libs_mplayer $_vaapilib -lva-x11 -lva"
++  libs_mplayer="$libs_mplayer $_vaapilib -lva-x11 -lva -lva-drm"
+   vomodules="vaapi $vomodules"
+ else
+   def_vaapi='#define CONFIG_VAAPI 0'
+diff --git a/libvo/drm_common.c b/libvo/drm_common.c
+new file mode 100644
+index 0000000..f04dfbb
+--- /dev/null
++++ b/libvo/drm_common.c
+@@ -0,0 +1,82 @@
++/*
++ * This file is part of MPlayer.
++ *
++ * MPlayer is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * MPlayer is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with MPlayer; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <fcntl.h>
++
++#include "drm_common.h"
++#include <va/va.h>
++#include <va/va_drm.h>
++#include "mp_msg.h"
++#include "x11_common.h"
++
++#include <libdrm/drm.h>
++#include <sys/ioctl.h>
++
++static int fd;
++int vo_drm_init(void)
++{
++	const char *name_drv = "/dev/dri/card0";
++	int sysfs_fd = 0;
++	char plane_hold = '1';
++
++	fd = open(name_drv, O_RDWR);
++	if (fd == -1) {
++		printf("Unable to open device %s\n", name_drv);
++		return 0;
++	}
++
++	sysfs_fd = open("/sys/module/emgd/control/crtc0/splash_video_plane_hold", O_WRONLY);
++	write(sysfs_fd, &plane_hold, 1);
++	close(sysfs_fd);
++
++	/* Get Display handle for VaLib (headless branch) */
++	mDisplay = vaGetDisplayDRM(fd);
++	/* vaInitialize() called @ vo_vaapi.c: L1155 */
++
++	if (!mDisplay) {
++		mp_msg(MSGT_VO, MSGL_ERR,
++			"vo_drm: couldn't open the VA DRM display!\n");
++		return 0;
++	}
++
++	return 1;
++}
++
++void vo_drm_uninit(void)
++{
++	int sysfs_fd;
++	char plane_release = '0';
++
++	if (!mDisplay) {
++		mp_msg(MSGT_VO, MSGL_V,
++				"vo: drm uninit called but DRM not initialized..\n");
++		return;
++	}
++
++	sysfs_fd = open("/sys/module/emgd/control/crtc0/splash_video_plane_hold", O_WRONLY);
++	write(sysfs_fd, &plane_release, 1);
++	close(sysfs_fd);
++
++	mp_msg(MSGT_VO, MSGL_V, "vo: uninit ...\n");
++	close(fd);
++	mDisplay = NULL;
++}
++
+diff --git a/libvo/drm_common.h b/libvo/drm_common.h
+new file mode 100644
+index 0000000..550c141
+--- /dev/null
++++ b/libvo/drm_common.h
+@@ -0,0 +1,25 @@
++/*
++ * This file is part of MPlayer.
++ *
++ * MPlayer is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * MPlayer is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with MPlayer; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#ifndef MPLAYER_DRM_COMMON_H
++#define MPLAYER_DRM_COMMON_H
++
++int vo_drm_init(void);
++void vo_drm_uninit(void);
++
++#endif /* MPLAYER_DRM_COMMON_H */
+diff --git a/libvo/vo_vaapi.c b/libvo/vo_vaapi.c
+index 77dc78d..2e206f8 100644
+--- a/libvo/vo_vaapi.c
++++ b/libvo/vo_vaapi.c
+@@ -30,6 +30,7 @@
+ #include "sub/sub.h"
+ #include "sub/eosd.h"
+ #include "x11_common.h"
++#include "drm_common.h"
+ #include "libavutil/common.h"
+ #include "libavcodec/vaapi.h"
+ #include "gui/interface.h"
+@@ -1146,8 +1147,8 @@ static int preinit(const char *arg)
+         return -1;
+     else
+ #endif
+-    if (!vo_init())
+-        return -1;
++	if (!vo_drm_init())
++		return -1;
+ #if CONFIG_XRENDER
+     if (xr_enabled && !init_xrender())
+         return -1;
+@@ -1162,7 +1163,7 @@ static int preinit(const char *arg)
+         va_context->display = vaGetDisplayGLX(mDisplay);
+     else
+ #endif
+-        va_context->display = vaGetDisplay(mDisplay);
++		va_context->display = mDisplay;
+     if (!va_context->display)
+         return -1;
+     mp_msg(MSGT_VO, MSGL_DBG2, "[vo_vaapi] preinit(): VA display %p\n", va_context->display);
+@@ -1945,8 +1946,6 @@ static int config(uint32_t width, uint32_t height,
+ 
+     free_video_specific();
+ 
+-    if (config_x11(width, height, display_width, display_height, flags, title) < 0)
+-        return -1;
+ 
+ #if CONFIG_GL
+     if (gl_enabled && config_glx(width, height) < 0)
+@@ -2325,6 +2324,30 @@ static void put_surface_xrender(struct vaapi_surface *surface)
+ }
+ #endif
+ 
++static void put_surface_drm(struct vaapi_surface *surface)
++{
++	VAStatus status;
++	int i;
++
++	for (i = 0; i <= !!(g_deint > 1); i++) {
++		const unsigned int flags = (get_field_flags(i) |
++								get_colorspace_flags() |
++								g_scaling);
++		status = vaPutSurface(va_context->display,
++								surface->id,
++								NULL,
++								0, 0, g_image_width, g_image_height,
++								g_output_rect.left,
++								g_output_rect.top,
++								g_output_rect.width,
++								g_output_rect.height,
++								NULL, 0,
++								flags);
++		if (!check_status(status, "vaPutSurface()"))
++			return;
++	}
++}
++
+ static void put_surface(struct vaapi_surface *surface)
+ {
+     if (!surface || surface->id == VA_INVALID_SURFACE)
+@@ -2340,7 +2363,7 @@ static void put_surface(struct vaapi_surface *surface)
+         put_surface_xrender(surface);
+     else
+ #endif
+-        put_surface_x11(surface);
++	put_surface_drm(surface);
+ }
+ 
+ static int draw_slice(uint8_t * image[], int stride[],
+@@ -2614,7 +2637,7 @@ static uint32_t draw_image(mp_image_t *mpi)
+ 
+ static void check_events(void)
+ {
+-    int events = vo_x11_check_events(mDisplay);
++	int events = 0; /* Disable x11: vo_x11_check_events(mDisplay); */
+ 
+     if (events & VO_EVENT_RESIZE)
+         resize();
+diff --git a/mplayer.c b/mplayer.c
+index ee9a5f0..5528944 100644
+--- a/mplayer.c
++++ b/mplayer.c
+@@ -138,6 +138,7 @@
+ #ifdef CONFIG_DVDREAD
+ #include "stream/stream_dvd.h"
+ #endif
++#include "libvo/drm_common.h"
+ 
+ int slave_mode;
+ int player_idle_mode;
+@@ -707,7 +708,7 @@ void exit_player_with_rc(enum exit_reason how, int rc)
+ #ifdef CONFIG_GUI
+     if (!use_gui)
+ #endif
+-    vo_uninit(); // Close the X11 connection (if any is open).
++		vo_drm_uninit();
+ #endif
+ 
+ #ifdef CONFIG_FREETYPE
+-- 
+1.8.0.1
+

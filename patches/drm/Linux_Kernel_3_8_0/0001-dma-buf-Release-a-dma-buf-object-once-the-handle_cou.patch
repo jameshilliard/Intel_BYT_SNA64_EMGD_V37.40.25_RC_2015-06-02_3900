@@ -1,0 +1,68 @@
+From 48b2e6c54410dce63bd3823ff419493da5638b9f Mon Sep 17 00:00:00 2001
+From: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Date: Thu, 2 Oct 2014 18:27:07 -0700
+Subject: [PATCH] dma-buf: Release a dma-buf object once the handle_count
+ becomes 0
+
+This patch is a snippet of the upstream 319c933c7 commit. When a
+drm GEM object's handle_count becomes 0, we need to release the dma-buf
+object associated with it and also explicitly unreference the drm obj
+itself. The code to do this is already present in the function
+i915_gem_dmabuf_release. However, this function doesn't get called
+because the Kernel's filesystem core code sees that there is still
+a reference on the associated file* obj.
+
+Upon further investigation, it was found that this reference was added
+as part of the file obj creation process in dma_buf_export(). Therefore,
+we need to explictly release this reference by calling fput which is
+done in this patch by calling dma_buf_put. After applying this patch,
+dma_buf_release() gets called by the Kernel's file system code and
+eventually i915_gem_dmabuf_release() gets called which frees the
+dma-buf obj and unrefs the associated GEM obj.
+---
+ include/drm/drmP.h | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/include/drm/drmP.h b/include/drm/drmP.h
+index d63ad4e..90262e7 100644
+--- a/include/drm/drmP.h
++++ b/include/drm/drmP.h
+@@ -76,6 +76,7 @@
+ #include <drm/drm_sarea.h>
+ 
+ #include <linux/idr.h>
++#include <linux/dma-buf.h>
+ 
+ #define __OS_HAS_AGP (defined(CONFIG_AGP) || (defined(CONFIG_AGP_MODULE) && defined(MODULE)))
+ #define __OS_HAS_MTRR (defined(CONFIG_MTRR))
+@@ -1682,6 +1683,14 @@ drm_gem_object_handle_unreference(struct drm_gem_object *obj)
+ 	drm_gem_object_unreference(obj);
+ }
+ 
++static void drm_gem_object_exported_dma_buf_free(struct drm_gem_object *obj)
++{
++	/* Unbreak the reference cycle if we have an exported dma_buf. */
++	if (obj->export_dma_buf) {
++		dma_buf_put(obj->export_dma_buf);
++	}
++}
++
+ static inline void
+ drm_gem_object_handle_unreference_unlocked(struct drm_gem_object *obj)
+ {
+@@ -1697,8 +1706,11 @@ drm_gem_object_handle_unreference_unlocked(struct drm_gem_object *obj)
+ 	* checked for a name
+ 	*/
+ 
+-	if (atomic_dec_and_test(&obj->handle_count))
++	if (atomic_dec_and_test(&obj->handle_count)) {
+ 		drm_gem_object_handle_free(obj);
++		drm_gem_object_exported_dma_buf_free(obj);
++	}
++
+ 	drm_gem_object_unreference_unlocked(obj);
+ }
+ 
+-- 
+1.7.11.7
+

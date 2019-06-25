@@ -1,0 +1,52 @@
+diff -Nur gstreamer-vaapi_a/ext/codecparsers/gst-libs/gst/codecparsers/gsth264parser.c gstreamer-vaapi_b/ext/codecparsers/gst-libs/gst/codecparsers/gsth264parser.c
+--- gstreamer-vaapi_a/ext/codecparsers/gst-libs/gst/codecparsers/gsth264parser.c	2015-04-03 14:54:20.334925596 +0800
++++ gstreamer-vaapi_b/ext/codecparsers/gst-libs/gst/codecparsers/gsth264parser.c	2015-04-03 14:55:52.096924533 +0800
+@@ -1174,6 +1174,9 @@
+   GST_DEBUG ("SEI message received: payloadType  %u, payloadSize = %u bits",
+       sei->payloadType, payload_size);
+ 
++  /* disable SCEP check in SEI */
++  nr->check_scep = FALSE;
++
+   switch (sei->payloadType) {
+     case GST_H264_SEI_BUF_PERIOD:
+       /* size not set; might depend on emulation_prevention_three_byte */
+@@ -1205,6 +1208,7 @@
+       res = GST_H264_PARSER_OK;
+       break;
+   }
++  nr->check_scep = TRUE;
+ 
+   /* When SEI message doesn't end at byte boundary,
+    * check remaining bits fit the specification.
+diff -Nur gstreamer-vaapi_a/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.c gstreamer-vaapi_b/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.c
+--- gstreamer-vaapi_a/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.c	2015-04-03 14:54:20.325925596 +0800
++++ gstreamer-vaapi_b/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.c	2015-04-03 14:56:02.960924408 +0800
+@@ -69,6 +69,7 @@
+   nr->data = data;
+   nr->size = size;
+   nr->n_epb = 0;
++  nr->check_scep = TRUE;
+ 
+   nr->byte = 0;
+   nr->bits_in_cache = 0;
+@@ -90,7 +91,7 @@
+     guint8 byte;
+     gboolean check_three_byte;
+ 
+-    check_three_byte = TRUE;
++    check_three_byte = nr->check_scep;
+   next_byte:
+     if (G_UNLIKELY (nr->byte >= nr->size))
+       return FALSE;
+diff -Nur gstreamer-vaapi_a/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.h gstreamer-vaapi_b/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.h
+--- gstreamer-vaapi_a/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.h	2015-04-03 14:54:20.290925597 +0800
++++ gstreamer-vaapi_b/ext/codecparsers/gst-libs/gst/codecparsers/nalutils.h	2015-04-03 14:57:18.055923538 +0800
+@@ -51,6 +51,7 @@
+   guint bits_in_cache;          /* bitpos in the cache of next bit */
+   guint8 first_byte;
+   guint64 cache;                /* cached bytes */
++  gboolean check_scep;          /* check SCEP bits*/
+ } NalReader;
+ 
+ void nal_reader_init (NalReader * nr, const guint8 * data, guint size);

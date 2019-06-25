@@ -1,0 +1,497 @@
+From 95ad19cdd0d385813550b216b108db3e39a7d7c2 Mon Sep 17 00:00:00 2001
+From: Lim Siew Hoon <siew.hoon.lim@intel.com>
+Date: Fri, 3 Apr 2015 20:06:38 +0800
+Subject: [Intel VA] Intel-va-driver 1.5.0 headless patch for splash video
+
+This patch is to get splash video feature to work on EMGD
+kernel version: LTSI 3.10.61
+Libva version: 1.5.0
+Intel Va driver version: 1.5.0
+
+v2:
+Get the correct number of planes
+
+v3:
+Update use of possible_crtcs
+
+The libva patch can be found here- lin-emgd_vlv/patches/common/
+splash_video_support_3.10.61/libva-intel-driver-1.5.0-headless.patch
+The libva patch applies to tag 1.5.0 from the repository
+git://anongit.freedesktop.org/vaapi/intel-driver
+
+HSD#206839
+Signed-off by: Adebisi, YetundeX <yetundex.adebisi@intel.com>
+Signed-off-by: Lim Siew Hoon <siew.hoon.lim@intel.com>
+Reviewed-by: Zou, Xiaohong <xiaohong.zou@intel.com>
+---
+ src/i965_drv_video.c | 423 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 415 insertions(+), 8 deletions(-)
+
+diff --git a/src/i965_drv_video.c b/src/i965_drv_video.c
+index c5f52dc..bb816b5 100644
+--- a/src/i965_drv_video.c
++++ b/src/i965_drv_video.c
+@@ -47,6 +47,21 @@
+ #include "i965_decoder.h"
+ #include "i965_encoder.h"
+ 
++#include <sys/ioctl.h>
++#include <drm_fourcc.h>
++
++#define SPVIDEO_MAX_FB_SUPPORTED        (10)
++struct spvideo_fb_list {
++        __u32 fb_ids[SPVIDEO_MAX_FB_SUPPORTED];
++        __u32 fbs_allocated;
++};
++
++#define BASE DRM_COMMAND_BASE
++#define DRM_IGD_SPVIDEO_INIT_BUFFERS   0x47
++#define DRM_IGD_SPVIDEO_DISPLAY        0x48
++#define DRM_IOCTL_IGD_SPVIDEO_INIT_BUFFERS  DRM_IOWR(BASE + DRM_IGD_SPVIDEO_INIT_BUFFERS, struct spvideo_fb_list)
++#define DRM_IOCTL_IGD_SPVIDEO_DISPLAY       DRM_IOWR(BASE + DRM_IGD_SPVIDEO_DISPLAY, struct drm_mode_set_plane)
++
+ #define CONFIG_ID_OFFSET                0x01000000
+ #define CONTEXT_ID_OFFSET               0x02000000
+ #define SURFACE_ID_OFFSET               0x04000000
+@@ -413,6 +428,231 @@ va_enc_packed_type_to_idx(int packed_type)
+     return idx;
+ }
+ 
++#define MAX_BUF_ALLOC    3 // double/triple buffering for color conversion
++static struct drm_mode_get_plane* _plane_read = NULL;
++static int _planes_count = 0;
++static int _color_conv_bo_cntr = 0;
++static dri_bo *_color_conv_bo[MAX_BUF_ALLOC] = {NULL};
++static __u32 fb_id[MAX_BUF_ALLOC] = {0};
++static int _crtcs_count = 0;
++
++typedef struct {
++	unsigned int crtc_id;
++	unsigned int pipe;
++} i965_crtc_info_t;
++
++static i965_crtc_info_t* _crtcs = NULL;
++
++static
++VAStatus getCrtcs(int drm_fd, int *crtc_count, i965_crtc_info_t **crtc_info)
++{
++	int i;
++	uint32_t *crtcs_ptr;
++	struct drm_mode_card_res card_res;
++	VAStatus va_status = VA_STATUS_SUCCESS;
++	i965_crtc_info_t *crtcs;
++
++	memset(&card_res, 0, sizeof(card_res));
++	if(ioctl(drm_fd, DRM_IOCTL_MODE_GETRESOURCES, &card_res)){
++		printf("Get device resources failed \n");
++		return VA_STATUS_ERROR_UNKNOWN;
++	}
++
++	if(card_res.count_crtcs == 0){
++		printf("No CRTC found \n");
++		return VA_STATUS_ERROR_UNKNOWN;
++	}
++
++	/* Get the crtc id list*/
++	crtcs_ptr = (uint32_t *)calloc(card_res.count_crtcs, sizeof(uint32_t));
++	if(!crtcs_ptr)
++		return VA_STATUS_ERROR_ALLOCATION_FAILED;
++
++	card_res.crtc_id_ptr = (intptr_t)crtcs_ptr;
++	card_res.count_fbs = 0;
++	card_res.count_connectors = 0;
++	card_res.count_encoders = 0;
++	if(ioctl(drm_fd, DRM_IOCTL_MODE_GETRESOURCES, &card_res)) {
++		printf("get CRTC ids from resources failed \n");
++		va_status = VA_STATUS_ERROR_UNKNOWN;
++		goto cleanup;
++	}
++
++	crtcs = (i965_crtc_info_t *)calloc(card_res.count_crtcs,
++			sizeof(i965_crtc_info_t));
++	if(!crtcs) {
++		va_status = VA_STATUS_ERROR_ALLOCATION_FAILED;
++		goto cleanup;
++	}
++	/* Now we have the crtc ids, get the pipe ID for each of them*/
++	for (i = 0; i < card_res.count_crtcs; i++) {
++		struct drm_i915_get_pipe_from_crtc_id get_pipe;
++		memset(&get_pipe, 0, sizeof(get_pipe));
++
++		get_pipe.crtc_id = crtcs_ptr[i];
++		if (drmIoctl(drm_fd, DRM_IOCTL_I915_GET_PIPE_FROM_CRTC_ID, &get_pipe)) {
++			printf("Failed to get pipe for CRTC id %d \n", get_pipe.crtc_id);
++			free(crtcs);
++			va_status = VA_STATUS_ERROR_UNKNOWN;
++			goto cleanup;
++		}
++		crtcs[i].crtc_id = get_pipe.crtc_id;
++		crtcs[i].pipe = get_pipe.pipe;
++	}
++	*crtc_count = card_res.count_crtcs;
++	*crtc_info = crtcs;
++
++cleanup:
++	free(crtcs_ptr);
++	return va_status;
++}
++
++static VAStatus getPlanes(int drm_fd,
++		struct drm_mode_get_plane_res **plane_read,
++		int *count_planes)
++{
++	int ret, counter;
++	struct drm_mode_get_plane_res plane_res;
++	memset(&plane_res, 0, sizeof(struct drm_mode_get_plane_res));
++	VAStatus va_status = VA_STATUS_SUCCESS;
++	uint32_t *plane_ids;
++	struct drm_mode_get_plane* planes;
++
++	/* Get number of planes*/
++	ret = ioctl(drm_fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &plane_res);
++	if(ret)	{
++		printf("Get plane resources FAILED 1\n");
++		return VA_STATUS_ERROR_UNKNOWN;
++	}
++
++	if(!plane_res.count_planes) {
++		printf("There are NO planes\n");
++		return VA_STATUS_ERROR_UNKNOWN;
++	}
++
++	plane_ids = (uint32_t *)calloc(plane_res.count_planes, sizeof(uint32_t));
++	if(!plane_ids)
++		return VA_STATUS_ERROR_ALLOCATION_FAILED;
++
++	plane_res.plane_id_ptr = (intptr_t)plane_ids;
++	ret = ioctl(drm_fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &plane_res);
++	if(ret) {
++		printf("get plane resources FAILED 2\n");
++		va_status = VA_STATUS_ERROR_UNKNOWN;
++		goto cleanup;
++	}
++
++	planes = (struct drm_mode_get_plane *)calloc(plane_res.count_planes,
++			sizeof(struct drm_mode_get_plane));
++	if(!planes){
++		va_status = VA_STATUS_ERROR_ALLOCATION_FAILED;
++		goto cleanup;
++	}
++
++	for (counter = 0; counter < plane_res.count_planes; counter++) {
++		planes[counter].plane_id = plane_ids[counter];
++		planes[counter].count_format_types = 0;
++
++		ret = ioctl(drm_fd, DRM_IOCTL_MODE_GETPLANE, &planes[counter]);
++		if(ret) {
++			printf("get plane %d FAILED\n", planes[counter].plane_id);
++			free(planes);
++			va_status = VA_STATUS_ERROR_UNKNOWN;
++			goto cleanup;
++		}
++	}
++	*plane_read = planes;
++	*count_planes = plane_res.count_planes;
++cleanup:
++	free(plane_ids);
++	return va_status;
++}
++
++VAStatus addFb2(int drm_fd, unsigned int destw, unsigned int desth, struct intel_region *dest_region, __u32 *fb_id)
++{
++    int ret;
++    struct drm_mode_fb_cmd2 plane_fb2 = {0};
++
++    plane_fb2.fb_id = 0;
++    plane_fb2.width = destw;
++    plane_fb2.height = desth;
++    plane_fb2.pixel_format = DRM_FORMAT_XRGB8888;//V4L2_PIX_FMT_RGB32; /* fourcc code from videodev2.h */
++    plane_fb2.flags = 0;
++
++    plane_fb2.handles[0] = plane_fb2.handles[1] = plane_fb2.handles[2] = plane_fb2.handles[3] = dest_region->bo->handle;
++    plane_fb2.pitches[0] = plane_fb2.pitches[1] = plane_fb2.pitches[2] = plane_fb2.pitches[3] = destw * 4;
++    plane_fb2.offsets[0] = plane_fb2.offsets[1] = plane_fb2.offsets[2] = plane_fb2.offsets[3] = 0;
++    ret = ioctl(drm_fd, DRM_IOCTL_MODE_ADDFB2, &plane_fb2);
++    if(ret)
++    {
++        printf("add fb2 FAILED\n");
++        return VA_STATUS_ERROR_UNKNOWN;
++    }
++    *fb_id = plane_fb2.fb_id;
++
++    return VA_STATUS_SUCCESS;
++}
++
++VAStatus setupSplashVideoBuffers(int drm_fd, __u32 *fb_id, int fbs_allocated)
++{
++    struct spvideo_fb_list spv_buf;
++    int counter, ret;
++
++    if(fbs_allocated < SPVIDEO_MAX_FB_SUPPORTED)
++    {
++        for(counter = 0; counter < fbs_allocated; counter++)
++        {
++            spv_buf.fb_ids[counter] = fb_id[counter];
++        }
++        spv_buf.fbs_allocated = fbs_allocated;
++    }
++
++    ret = ioctl(drm_fd, DRM_IOCTL_IGD_SPVIDEO_INIT_BUFFERS, &spv_buf);
++    if(ret)
++    {
++        printf("setup splash video buffers FAILED\n");
++        return VA_STATUS_ERROR_UNKNOWN;
++    }
++
++    return VA_STATUS_SUCCESS;
++}
++
++VAStatus displaySplashVideo(int drm_fd,
++		__u32 plane_id,
++		__u32 crtc_id,
++		__u32 bo_id,
++		short srcx, short srcy,
++		unsigned short srcw, unsigned short srch,
++		short destx, short desty,
++		unsigned short destw, unsigned short desth) {
++    int ret;
++    struct drm_mode_set_plane plane_write = {0};
++
++    plane_write.plane_id = plane_id;
++    plane_write.fb_id = bo_id;
++    plane_write.crtc_id = crtc_id;
++    plane_write.flags = 0;
++
++    plane_write.crtc_x = destx;
++    plane_write.crtc_y = desty;
++    plane_write.crtc_w = destw;
++    plane_write.crtc_h = desth;
++
++    plane_write.src_x = srcx;
++    plane_write.src_y = srcy;
++    plane_write.src_w = srcw<<16;
++    plane_write.src_h = srch<<16;
++
++    ret = ioctl(drm_fd, DRM_IOCTL_IGD_SPVIDEO_DISPLAY, &plane_write);
++    if(ret)
++    {
++        printf("display video FAILED\n");
++        return VA_STATUS_ERROR_UNKNOWN;
++    }
++
++    return VA_STATUS_SUCCESS;
++}
++
+ VAStatus 
+ i965_QueryConfigProfiles(VADriverContextP ctx,
+                          VAProfile *profile_list,       /* out */
+@@ -1926,17 +2166,36 @@ i965_CreateContext(VADriverContextP ctx,
+ VAStatus 
+ i965_DestroyContext(VADriverContextP ctx, VAContextID context)
+ {
+-    struct i965_driver_data *i965 = i965_driver_data(ctx);
+-    struct object_context *obj_context = CONTEXT(context);
+-
+-    ASSERT_RET(obj_context, VA_STATUS_ERROR_INVALID_CONTEXT);
++	struct i965_driver_data *i965 = i965_driver_data(ctx);
++	struct object_context *obj_context = CONTEXT(context);
++	struct drm_state *drm_state = ctx->drm_state;
++	int drm_fd = drm_state->fd;
++	int counter;
++	VAStatus va_status = VA_STATUS_SUCCESS;
++	for(counter = 0; counter < _planes_count; counter++) {
++		if(_plane_read[counter].crtc_id != 0) {
++		/* call display_splash_video IOCTL similar
++		 * to setPlane but pass bo_id (which is _color_conv_bo_cntr)
++		 * and all zeros
++		 */
++			va_status = displaySplashVideo(drm_fd,
++				_plane_read[counter].plane_id,
++				_plane_read[counter].crtc_id,
++				_color_conv_bo_cntr, 0, 0, 0, 0, 0, 0, 0, 0);
++			if (VA_STATUS_SUCCESS != va_status)
++				break;
++		}
++	}
++	free(_plane_read);
++	free(_crtcs);
++	ASSERT_RET(obj_context, VA_STATUS_ERROR_INVALID_CONTEXT);
+ 
+-    if (i965->current_context_id == context)
+-        i965->current_context_id = VA_INVALID_ID;
++	if (i965->current_context_id == context)
++		i965->current_context_id = VA_INVALID_ID;
+ 
+-    i965_destroy_context(&i965->context_heap, (struct object_base *)obj_context);
++	i965_destroy_context(&i965->context_heap, (struct object_base *)obj_context);
+ 
+-    return VA_STATUS_SUCCESS;
++	return va_status;
+ }
+ 
+ static void 
+@@ -4386,6 +4645,148 @@ i965_PutImage(VADriverContextP ctx,
+     return va_status;
+ }
+ 
++VAStatus
++i965_PutSurfaceDrm(VADriverContextP ctx,
++                VASurfaceID src_surface,
++                void *draw, /* X Drawable */
++                short srcx,
++                short srcy,
++                unsigned short srcw,
++                unsigned short srch,
++                short destx,
++                short desty,
++                unsigned short destw,
++                unsigned short desth,
++                VARectangle *cliprects, /* client supplied clip list */
++                unsigned int number_cliprects, /* number of clip rects in the clip list */
++                unsigned int flags) /* de-interlacing flags */
++{
++	struct i965_driver_data *i965 = i965_driver_data(ctx);
++	struct i965_render_state *render_state = &i965->render_state;
++	struct intel_region *dest_region;
++	struct object_surface *src_obj_surface;
++	VARectangle src_rect, dst_rect;
++	int ret;
++	struct drm_state *drm_state = ctx->drm_state;
++	int drm_fd = drm_state->fd;
++	int counter = 0;
++	VAStatus va_status = VA_STATUS_SUCCESS;
++	int i = 0;
++
++	/* Some broken sources such as H.264 conformance case FM2_SVA_C
++	 * will get here
++	 */
++	src_obj_surface = SURFACE(src_surface);
++	if (!src_obj_surface || !src_obj_surface->bo)
++		return VA_STATUS_SUCCESS;
++
++	_i965LockMutex(&i965->render_mutex);
++	dest_region = render_state->draw_region;
++	if (!dest_region) {
++		dest_region = (struct intel_region *)calloc(1, sizeof(*dest_region));
++		assert(dest_region);
++		render_state->draw_region = dest_region;
++		//TODO: find method to perform matching similar to dri_flink
++	}
++
++	dest_region->x = destx;
++	dest_region->y = desty;
++	dest_region->width = destw;
++	dest_region->height = desth;
++	dest_region->cpp = 4;
++	dest_region->pitch = destw * 4;
++
++	if(_color_conv_bo[_color_conv_bo_cntr] == NULL) {
++		for(counter = 0; counter < MAX_BUF_ALLOC; counter++) {
++		/* allocate once for all the buffers */
++			if(_color_conv_bo[counter] == NULL) {
++				_color_conv_bo[counter] = drm_intel_bo_alloc_for_render(i965->intel.bufmgr,
++									"rendering buffer",
++									destw*4*desth, 4096);
++				assert(_color_conv_bo[counter]);
++			}
++			dest_region->bo = _color_conv_bo[counter];
++
++			/* may not be needed for addfb2 */
++			ret = dri_bo_get_tiling(dest_region->bo, &(dest_region->tiling),
++							&(dest_region->swizzle));
++			assert(ret == 0);
++			if(VA_STATUS_SUCCESS != addFb2(drm_fd, destw, desth,
++							dest_region, &fb_id[counter])) {
++				return VA_STATUS_ERROR_UNKNOWN;
++			}
++		}
++
++		/* call setup_splash_video_buffers IOCTL passing fb_id[] and number
++		 * of fbs. It will create mapping of id to fb_id.
++		 */
++		if(VA_STATUS_SUCCESS != setupSplashVideoBuffers(drm_fd, &fb_id[0],
++									MAX_BUF_ALLOC)) {
++			return VA_STATUS_ERROR_UNKNOWN;
++		}
++		/* drop master to allow others (eg. startx) to be master */
++		if(ioctl(drm_fd, DRM_IOCTL_DROP_MASTER, NULL)) {
++			printf("drop master FAILED\n");
++		}
++	}
++	dest_region->bo = _color_conv_bo[_color_conv_bo_cntr];
++
++	/* may not be needed for addfb2 */
++	ret = dri_bo_get_tiling(dest_region->bo, &(dest_region->tiling), &(dest_region->swizzle));
++	assert(ret == 0);
++
++	src_rect.x      = srcx;
++	src_rect.y      = srcy;
++	src_rect.width  = srcw;
++	src_rect.height = srch;
++
++	dst_rect.x      = destx;
++	dst_rect.y      = desty;
++	dst_rect.width  = destw;
++	dst_rect.height = desth;
++
++	/* performs color conversion NV12->XRGB */
++	intel_render_put_surface(ctx, src_obj_surface, &src_rect, &dst_rect, flags);
++
++	_i965UnlockMutex(&i965->render_mutex);
++
++	if(_plane_read == NULL) {/* Only need to perform once */
++		va_status = getPlanes(drm_fd, &_plane_read, &_planes_count);
++		if(VA_STATUS_SUCCESS != va_status)
++			return va_status;
++
++		va_status = getCrtcs(drm_fd, &_crtcs_count, &_crtcs);
++		if(VA_STATUS_SUCCESS != va_status)
++			 return va_status;
++	}
++
++	for(counter = 0; counter < _planes_count; counter++) {
++		struct drm_mode_get_plane* plane = &_plane_read[counter];
++		int crtc_id = plane->crtc_id;
++		i = 0;
++
++		while(crtc_id == 0 && i < _crtcs_count) {
++			if(plane->possible_crtcs & (1 << _crtcs[i].pipe))
++				crtc_id = _crtcs[i].crtc_id;
++			i++;
++		}
++		if(crtc_id != 0) {
++			va_status = displaySplashVideo(drm_fd, plane->plane_id,
++					crtc_id, _color_conv_bo_cntr,
++					destx, desty, destw, desth,
++					destx, desty, destw, desth);
++			if(VA_STATUS_SUCCESS != va_status)
++				return va_status;
++
++			plane->crtc_id = crtc_id;
++		}
++	}
++
++	_color_conv_bo_cntr = (_color_conv_bo_cntr + 1) % MAX_BUF_ALLOC;
++
++	return VA_STATUS_SUCCESS;
++}
++
+ VAStatus 
+ i965_PutSurface(VADriverContextP ctx,
+                 VASurfaceID surface,
+@@ -4402,6 +4803,12 @@ i965_PutSurface(VADriverContextP ctx,
+                 unsigned int number_cliprects, /* number of clip rects in the clip list */
+                 unsigned int flags) /* de-interlacing flags */
+ {
++    if(draw == NULL) {
++        return i965_PutSurfaceDrm(ctx, surface, draw, srcx,
++                                        srcy, srcw, srch, destx,
++                                        desty, destw, desth, cliprects,
++                                        number_cliprects, flags);
++    }
+ #ifdef HAVE_VA_X11
+     if (IS_VA_X11(ctx)) {
+         VARectangle src_rect, dst_rect;
+-- 
+1.8.3.1
+

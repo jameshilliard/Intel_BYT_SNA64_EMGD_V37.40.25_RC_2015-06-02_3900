@@ -1,0 +1,1102 @@
+diff --git a/configure.ac b/configure.ac
+index c11920a..f639d70 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -51,6 +51,11 @@ AC_ARG_ENABLE(x11,
+                     [build with VA/X11 API support @<:@default=yes@:>@])],
+     [], [enable_x11="yes"])
+ 
++AC_ARG_ENABLE(xv,
++    [AC_HELP_STRING([--enable-xv],
++                    [build with X11/XV API support @<:@default=yes@:>@])],
++    [], [enable_xv="yes"])
++
+ AC_ARG_ENABLE([wayland],
+     [AC_HELP_STRING([--enable-wayland],
+                     [build with VA/Wayland API support @<:@default=yes@:>@])],
+@@ -129,6 +134,18 @@ if test "$USE_X11" = "yes"; then
+ fi
+ AM_CONDITIONAL(USE_X11, test "$USE_X11" = "yes")
+ 
++dnl Check for X11/XV API
++USE_XV="$enable_xv"
++if test "$USE_XV" = "yes"; then
++    PKG_CHECK_MODULES([X11],  [x11],  [:], [USE_XV="no"])
++    PKG_CHECK_MODULES([XEXT], [xext], [:], [USE_XV="no"])
++    PKG_CHECK_MODULES([XV],   [xv],   [:], [USE_XV="no"])
++    if test "$USE_XV" = "yes"; then
++        AC_DEFINE([HAVE_X11_XV], [1], [Defined to 1 if X11/XV API is built])
++    fi
++fi
++AM_CONDITIONAL(USE_XV, test "$USE_XV" = "yes")
++
+ dnl Check for VA-API drivers path
+ AC_MSG_CHECKING([for VA drivers path])
+ LIBVA_DRIVERS_PATH=`$PKG_CONFIG libva --variable driverdir`
+@@ -197,6 +214,7 @@ dnl Print summary
+ BACKENDS=""
+ AS_IF([test "$USE_DRM" = "yes"], [BACKENDS="$BACKENDS drm"])
+ AS_IF([test "$USE_X11" = "yes"], [BACKENDS="$BACKENDS x11"])
++AS_IF([test "$USE_XV" = "yes"], [BACKENDS="$BACKENDS xv"])
+ AS_IF([test "$USE_WAYLAND" = "yes"], [BACKENDS="$BACKENDS wayland"])
+ 
+ echo
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 7e755dc..4d9eaea 100755
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -149,6 +149,11 @@ noinst_HEADERS			= $(source_h)
+ if USE_X11
+ source_c			+= i965_output_dri.c
+ source_h			+= i965_output_dri.h
++if USE_XV
++source_c			+= i965_output_xv.c va_xv.c
++source_h			+= i965_output_xv.h va_xv.h va_xvcommon.h va_xv_ddx.h
++driver_cflags		+= -lXext -lX11 -lXv
++endif
+ endif
+ 
+ if USE_WAYLAND
+diff --git a/src/i965_drv_video.c b/src/i965_drv_video.c
+index c5f52dc..7c77986 100644
+--- a/src/i965_drv_video.c
++++ b/src/i965_drv_video.c
+@@ -32,6 +32,9 @@
+ 
+ #ifdef HAVE_VA_X11
+ # include "i965_output_dri.h"
++#ifdef HAVE_X11_XV
++# include "i965_output_xv.h"
++#endif
+ #endif
+ 
+ #ifdef HAVE_VA_WAYLAND
+@@ -260,6 +263,23 @@ static const VADisplayAttribute i965_display_attributes[] = {
+         0, 3, VA_ROTATION_NONE,
+         VA_DISPLAY_ATTRIB_GETTABLE|VA_DISPLAY_ATTRIB_SETTABLE
+     },
++
++#ifdef HAVE_X11_XV
++    /* Addin the local device attributes, gstreamer-vaapi will need this
++     * attributes to determine whether it is a local or external device before
++     * it set the gpu/overlay rendering.
++     */
++    {
++        VADisplayAttribRenderDevice,
++        1, 1, VA_RENDER_DEVICE_LOCAL,
++        VA_DISPLAY_ATTRIB_GETTABLE
++    },
++    {
++        VADisplayAttribRenderMode,
++        1, 2, VA_RENDER_MODE_LOCAL_GPU,
++        VA_DISPLAY_ATTRIB_GETTABLE|VA_DISPLAY_ATTRIB_SETTABLE
++    },
++#endif
+ };
+ 
+ /* List of supported image formats */
+@@ -2988,6 +3008,12 @@ i965_display_attributes_init(VADriverContextP ctx)
+         !i965->saturation_attrib) {
+         goto error;
+     }
++#ifdef HAVE_X11_XV
++    i965->rendermode_attrib = get_display_attribute(ctx, VADisplayAttribRenderMode);
++    if (!i965->rendermode_attrib) {
++        goto error;
++    }
++#endif
+     return true;
+ 
+ error:
+@@ -3078,6 +3104,18 @@ i965_SetDisplayAttributes(
+             src_attrib->value > dst_attrib->max_value)
+             return VA_STATUS_ERROR_INVALID_PARAMETER;
+ 
++#ifdef HAVE_X11_XV
++        if (dst_attrib->type == VADisplayAttribRenderMode) {
++            if ((src_attrib->value == VA_RENDER_MODE_LOCAL_OVERLAY)) {
++                if (!i965_output_xv_enable(ctx))
++                    return VA_STATUS_ERROR_OPERATION_FAILED;
++            } else {
++                i965_output_xv_disable(ctx);
++            }
++        }
++#endif
++
++
+         dst_attrib->value = src_attrib->value;
+         /* XXX: track modified attributes through timestamps */
+     }
+@@ -4403,6 +4441,10 @@ i965_PutSurface(VADriverContextP ctx,
+                 unsigned int flags) /* de-interlacing flags */
+ {
+ #ifdef HAVE_VA_X11
++#ifdef HAVE_X11_XV
++    struct i965_driver_data *i965 = i965_driver_data(ctx);
++#endif
++
+     if (IS_VA_X11(ctx)) {
+         VARectangle src_rect, dst_rect;
+ 
+@@ -4416,8 +4458,14 @@ i965_PutSurface(VADriverContextP ctx,
+         dst_rect.width  = destw;
+         dst_rect.height = desth;
+ 
+-        return i965_put_surface_dri(ctx, surface, draw, &src_rect, &dst_rect,
+-                                    cliprects, number_cliprects, flags);
++#ifdef HAVE_X11_XV
++        if (i965->rendermode_attrib->value == VA_RENDER_MODE_LOCAL_OVERLAY)
++            return i965_put_surface_xv(ctx, surface, draw, &src_rect, &dst_rect,
++                                       cliprects, number_cliprects, flags);
++        else
++#endif
++            return i965_put_surface_dri(ctx, surface, draw, &src_rect, &dst_rect,
++                                        cliprects, number_cliprects, flags);
+     }
+ #endif
+     return VA_STATUS_ERROR_UNIMPLEMENTED;
+@@ -5658,6 +5706,14 @@ struct {
+         i965_output_dri_terminate,
+         VA_DISPLAY_X11,
+     },
++
++#ifdef HAVE_X11_XV
++    {
++        i965_output_xv_init,
++        i965_output_xv_terminate,
++        VA_DISPLAY_X11,
++    },
++#endif
+ #endif
+ };
+ 
+diff --git a/src/i965_drv_video.h b/src/i965_drv_video.h
+index 9636010..1922fe7 100644
+--- a/src/i965_drv_video.h
++++ b/src/i965_drv_video.h
+@@ -403,6 +403,7 @@ struct i965_driver_data
+     VADisplayAttribute *contrast_attrib;
+     VADisplayAttribute *hue_attrib;
+     VADisplayAttribute *saturation_attrib;
++    VADisplayAttribute *rendermode_attrib;
+     VAContextID current_context_id;
+ 
+     /* VA/DRI (X11) specific data */
+@@ -410,6 +411,9 @@ struct i965_driver_data
+ 
+     /* VA/Wayland specific data */
+     struct va_wl_output *wl_output;
++
++    /* X11/XV (X11) specific data */
++    struct va_xv_output *xv_output;
+ };
+ 
+ #define NEW_CONFIG_ID() object_heap_allocate(&i965->config_heap);
+diff --git a/src/i965_output_xv.c b/src/i965_output_xv.c
+new file mode 100644
+index 0000000..b735b46
+--- /dev/null
++++ b/src/i965_output_xv.c
+@@ -0,0 +1,317 @@
++/*
++ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sub license, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the
++ * next paragraph) shall be included in all copies or substantial portions
++ * of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
++ * IN NO EVENT SHALL PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR
++ * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#include "sysdeps.h"
++
++#include <va/va_backend.h>
++
++#include "i965_defines.h"
++#include "i965_drv_video.h"
++#include "i965_output_xv.h"
++
++#include "va_xv.h"
++
++#define NUM_VAXV_BUF     3
++
++struct va_xv_output {
++    int vaxv_port;
++    unsigned int vaxv_format;
++    unsigned int vaxv_caps;
++    int vaxv_format_index;
++
++    int current_buf;
++    VASurfaceID va_surf_id[NUM_VAXV_BUF];
++};
++
++static struct vaxv_formats {
++    unsigned int fourcc;
++    unsigned int va_format;
++    unsigned int subsample;
++} vaxv_formats_list[] = {
++    { VA_FOURCC('Y', 'U', 'Y', '2'), VA_RT_FORMAT_YUV422, SUBSAMPLE_YUV422H },
++    { VA_FOURCC('U', 'Y', 'V', 'Y'), VA_RT_FORMAT_YUV422, SUBSAMPLE_YUV422H },
++};
++
++
++VAStatus
++i965_DestroySurfaces(VADriverContextP ctx,
++                     VASurfaceID *surface_list,
++                     int num_surfaces);
++VAStatus
++i965_CreateSurfaces(VADriverContextP ctx,
++                    int width,
++                    int height,
++                    int format,
++                    int num_surfaces,
++                    VASurfaceID *surfaces);
++
++static void i965_CreateVAXVBuffer(VADriverContextP ctx,
++                                  struct va_xv_output *xv_output,
++                                  int width,
++                                  int height,
++                                  int fmt_idx,
++                                  int index)
++{
++    struct i965_driver_data *i965 = i965_driver_data(ctx);
++    struct object_surface *obj_surface;
++
++    i965_CreateSurfaces(ctx, width, height, vaxv_formats_list[fmt_idx].va_format, 1, &xv_output->va_surf_id[index]);
++    obj_surface = SURFACE(xv_output->va_surf_id[index]);
++    i965_check_alloc_surface_bo(ctx, obj_surface, 0, vaxv_formats_list[fmt_idx].fourcc, vaxv_formats_list[fmt_idx].subsample);
++}
++
++static void i965_DestroyVAXVBuffer(VADriverContextP ctx,
++                                struct va_xv_output *xv_output,
++                                int index)
++{
++    if (xv_output->va_surf_id[index] != 0) {
++        i965_DestroySurfaces(ctx, &xv_output->va_surf_id[index], 1);
++        xv_output->va_surf_id[index] = 0;
++    }
++}
++
++bool
++i965_output_xv_init(VADriverContextP ctx)
++{
++    struct i965_driver_data * const i965 = i965_driver_data(ctx);
++    unsigned short major = 0, minor = 0;
++
++    if (va_xvQueryVersion(ctx, &major, &minor) != VA_XV_STATUS_SUCCESS)
++        goto error;
++
++    if ((major != VAXV_MAJOR) || (minor != VAXV_MINOR))
++        goto error;
++
++    i965->xv_output = calloc(1, sizeof(struct va_xv_output));
++    if (!i965->xv_output) {
++        goto error;
++    } else {
++        i965->xv_output->vaxv_format_index = -1;
++    }
++
++    return true;
++
++error :
++    i965->num_display_attributes = 1;
++    i965_output_xv_terminate(ctx);
++
++    /* Just return true to not break the i965_init */
++    return true;
++}
++
++void
++i965_output_xv_terminate(VADriverContextP ctx)
++{
++    struct i965_driver_data * const i965 = i965_driver_data(ctx);
++    struct va_xv_output * const xv_output = i965->xv_output;
++    int i = 0;
++
++    if (!xv_output)
++        return;
++
++    if (xv_output->vaxv_port) {
++        va_xvFreePort(ctx, xv_output->vaxv_port);
++        xv_output->vaxv_port = 0;
++    }
++
++    for (i = 0; i < NUM_VAXV_BUF; ++i) {
++        if (xv_output->va_surf_id[i]) {
++             i965_DestroyVAXVBuffer(ctx, xv_output, i);
++        }
++    }
++
++    free(xv_output);
++    i965->xv_output = NULL;
++}
++
++bool i965_output_xv_enable(VADriverContextP ctx)
++{
++    struct i965_driver_data * const i965 = i965_driver_data(ctx);
++    int port_id = 0;
++
++    /* If the port alreay grabed, just return true */
++    if (i965->xv_output->vaxv_port)
++        return true;
++
++    if ((va_xvFindAndReservePort(ctx, &port_id) != VA_XV_STATUS_SUCCESS) ||
++        (!port_id))
++        return false;
++
++    i965->xv_output->vaxv_port = port_id;
++
++    return true;
++}
++
++void i965_output_xv_disable(VADriverContextP ctx)
++{
++    struct i965_driver_data * const i965 = i965_driver_data(ctx);
++    struct va_xv_output * const xv_output = i965->xv_output;
++    int i = 0;
++
++    if (!xv_output)
++        return;
++
++    if (xv_output->vaxv_port) {
++        va_xvFreePort(ctx, xv_output->vaxv_port);
++        xv_output->vaxv_port = 0;
++    }
++
++    for (i = 0; i < NUM_VAXV_BUF; ++i) {
++        if (xv_output->va_surf_id[i]) {
++             i965_DestroyVAXVBuffer(ctx, xv_output, i);
++        }
++    }
++}
++
++VAStatus
++i965_put_surface_xv(
++    VADriverContextP    ctx,
++    VASurfaceID         surface,
++    void               *draw,
++    const VARectangle  *src_rect,
++    const VARectangle  *dst_rect,
++    const VARectangle  *cliprects,
++    unsigned int        num_cliprects,
++    unsigned int        flags
++)
++{
++    struct i965_driver_data * const i965 = i965_driver_data(ctx);
++    struct va_xv_output * const xv_output = i965->xv_output;
++    VARectangle dest_rect;
++    struct i965_surface src_surface;
++    struct i965_surface dst_surface;
++    struct object_surface *obj_surface;
++    int next, width, height, ret, i;
++    va_xv_buf_t buf_out;
++
++    _i965LockMutex(&i965->render_mutex);
++
++    if (xv_output->current_buf >= (NUM_VAXV_BUF - 1)) {
++        next = 0;
++    } else {
++        next = xv_output->current_buf;
++        ++next;
++    }
++
++    if (!xv_output->vaxv_format) {
++        if (va_xvQueryPortFormat(ctx, xv_output->vaxv_port, &xv_output->vaxv_format)
++            != VA_XV_STATUS_SUCCESS)
++            goto error;
++
++        if (va_xvQueryPortCapabilities(ctx, xv_output->vaxv_port, &xv_output->vaxv_caps)
++            != VA_XV_STATUS_SUCCESS)
++            goto error;
++
++        if (xv_output->vaxv_format != VA_FOURCC('N', 'V', '1', '2')) {
++            for (i = 0; i < ARRAY_ELEMS(vaxv_formats_list); ++i) {
++                if (xv_output->vaxv_format == vaxv_formats_list[i].fourcc) break;
++            }
++            xv_output->vaxv_format_index = i;
++        }
++    }
++
++    if (xv_output->vaxv_format_index > -1) {
++        /* Currently only support YUY2 buffer. */
++        if (xv_output->vaxv_format_index >= ARRAY_ELEMS(vaxv_formats_list))
++            goto error;
++
++        buf_out.pixel_format = vaxv_formats_list[xv_output->vaxv_format_index].fourcc;
++
++        /* Use the if statement, future may need more checkings for different formats */
++        if (buf_out.pixel_format == VA_FOURCC('Y', 'U', 'Y', '2')) {
++            width = ALIGN(dst_rect->width, 32);
++            height = ALIGN(dst_rect->height, 2);
++
++            buf_out.pitches[0] = width * 2;
++            buf_out.pitches[1] = buf_out.pitches[2] = 0;
++
++            buf_out.offsets[0] = buf_out.offsets[1] = buf_out.offsets[2] = 0;
++        }
++
++        buf_out.buf_width = width;
++        buf_out.buf_height = height;
++
++        /* Create the surface buffer if it does not exist or different size.  We
++         * are using triple buffering.
++         */
++        if (xv_output->va_surf_id[next]) {
++            obj_surface = SURFACE(xv_output->va_surf_id[next]);
++
++            if ((obj_surface->orig_width != width) ||
++                (obj_surface->orig_height != height)) {
++                i965_DestroyVAXVBuffer(ctx, xv_output, next);
++                i965_CreateVAXVBuffer(ctx, xv_output, width, height, xv_output->vaxv_format_index, next);
++            }
++        } else {
++            i965_CreateVAXVBuffer(ctx, xv_output, width, height, xv_output->vaxv_format_index, next);
++        }
++
++        obj_surface = SURFACE(surface);
++        src_surface.base = (struct object_base *) obj_surface;
++        src_surface.type = I965_SURFACE_TYPE_SURFACE;
++        src_surface.flags = I965_SURFACE_FLAG_FRAME;
++
++        obj_surface = SURFACE(xv_output->va_surf_id[next]);
++        dst_surface.base = (struct object_base *) obj_surface;
++        dst_surface.type = I965_SURFACE_TYPE_SURFACE;
++        dst_surface.flags = I965_SURFACE_FLAG_FRAME;
++
++        dest_rect.x = 0;
++        dest_rect.y = 0;
++
++        /* Scale the image to output size. */
++        dest_rect.width = dst_rect->width;
++        dest_rect.height = dst_rect->height;
++
++        /* Use VPP features to convert and scale. */
++        i965_image_processing(ctx,
++                              &src_surface,
++                              src_rect,
++                              &dst_surface,
++                              &dest_rect);
++    } else {
++        goto error;  /* Currently there is no direct support for NV12 */
++    }
++
++    drm_intel_bo_flink(obj_surface->bo, &buf_out.buf_handle);
++
++    ret = va_xvPutImage(ctx, xv_output->vaxv_port, draw, &buf_out,
++                        dest_rect.x, dest_rect.y, dest_rect.width, dest_rect.height,
++                        dst_rect->x, dst_rect->y, dst_rect->width, dst_rect->height, flags);
++
++    if (ret == VA_XV_STATUS_SUCCESS) {
++       xv_output->current_buf = next;
++    } else {
++       goto error;
++    }
++
++    _i965UnlockMutex(&i965->render_mutex);
++
++    return VA_STATUS_SUCCESS;
++
++error:
++    _i965UnlockMutex(&i965->render_mutex);
++
++    return VA_STATUS_ERROR_UNKNOWN;
++}
+diff --git a/src/i965_output_xv.h b/src/i965_output_xv.h
+new file mode 100644
+index 0000000..0d39996
+--- /dev/null
++++ b/src/i965_output_xv.h
+@@ -0,0 +1,53 @@
++/*
++ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sub license, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the
++ * next paragraph) shall be included in all copies or substantial portions
++ * of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
++ * IN NO EVENT SHALL PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR
++ * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#ifndef I965_OUTPUT_XV_H
++#define I965_OUTPUT_XV_H
++
++#include <stdbool.h>
++#include <va/va_backend.h>
++
++bool
++i965_output_xv_init(VADriverContextP ctx);
++
++void
++i965_output_xv_terminate(VADriverContextP ctx);
++
++VAStatus
++i965_put_surface_xv(
++    VADriverContextP    ctx,
++    VASurfaceID         surface,
++    void               *draw,
++    const VARectangle  *src_rect,
++    const VARectangle  *dst_rect,
++    const VARectangle  *cliprects,
++    unsigned int        num_cliprects,
++    unsigned int        flags
++);
++
++bool i965_output_xv_enable(VADriverContextP ctx);
++
++void i965_output_xv_disable(VADriverContextP ctx);
++
++#endif /* I965_OUTPUT_XV_H */
+diff --git a/src/va_xv.c b/src/va_xv.c
+new file mode 100644
+index 0000000..214fe58
+--- /dev/null
++++ b/src/va_xv.c
+@@ -0,0 +1,351 @@
++/*
++ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sub license, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the
++ * next paragraph) shall be included in all copies or substantial portions
++ * of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
++ * IN NO EVENT SHALL PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR
++ * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#include <X11/Xlib.h>
++#include <X11/Xutil.h>
++#include <errno.h>
++
++#include <X11/extensions/XShm.h>
++
++#include <X11/extensions/Xv.h>
++#include <X11/extensions/Xvlib.h>
++#include <sys/shm.h>
++
++#include <string.h>
++
++#include <va/va_backend.h>
++#include "va_xv.h"
++#include "va_xv_ddx.h"
++
++/* Will have to move to some structure if in libva layer. */
++static XShmSegmentInfo va_xv_shminfo;
++static XvImage *va_xv_img = NULL;
++static GC va_xv_gc = None;
++
++
++static int _vaxv_QueryPortVersion(VADriverContextP ctx, int port, unsigned short *major, unsigned short *minor);
++
++int va_xvQueryVersion(VADriverContextP ctx, unsigned short *major, unsigned short *minor)
++{
++    if ((ctx == NULL) || (major == NULL) || (minor == NULL)) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    *major = VAXV_MAJOR;
++    *minor = VAXV_MINOR;
++
++    return VA_XV_STATUS_SUCCESS;
++}
++
++int va_xvFindAndReservePort(VADriverContextP ctx, int *port_id)
++{
++    XvAdaptorInfo *xv_adaptors = NULL;
++    XvAttribute *xv_attribs = NULL;
++    XvImageFormatValues *xv_formats = NULL;
++    XvPortID xv_port_id = 0;
++    unsigned int num_xv_adaptors, num_xv_formats, i, j, k;
++    unsigned short major, minor;
++    int num_xv_attribs, ret = VA_XV_STATUS_ERROR;
++
++    if ((ctx == NULL) || (ctx->native_dpy == NULL) || (port_id == NULL)) {
++        goto error;
++    }
++
++    if (!XShmQueryExtension(ctx->native_dpy)) {
++        goto error;
++    }
++
++    if (XvQueryAdaptors(ctx->native_dpy, DefaultRootWindow(ctx->native_dpy),
++                        &num_xv_adaptors, &xv_adaptors) != Success) {
++        goto error;
++    }
++
++    for (i = 0; i < num_xv_adaptors; ++i)
++    {
++        if ((xv_adaptors[i].type & XvInputMask) &&
++            (xv_adaptors[i].type & XvImageMask)) {
++            for (j = 0; j < xv_adaptors[i].num_ports; ++j) {
++                xv_port_id = xv_adaptors[i].base_id + j;
++
++                xv_formats = XvListImageFormats(ctx->native_dpy, xv_port_id, (int *) &num_xv_formats);
++
++                // Port that support VAXV have FOURCC_VAXV in the supported image formats.
++                for (k = 0; k < num_xv_formats; ++k) {
++                    if (xv_formats[k].id == FOURCC_VAXV) break;
++                }
++
++                if (xv_formats) {
++                    XFree(xv_formats);
++                }
++
++                if (k >= num_xv_formats) {
++                    xv_port_id = 0;
++                    continue;
++                }
++
++                // Port that support FOURCC_VAXV have VAXV attribute as well.
++                xv_attribs = XvQueryPortAttributes(ctx->native_dpy, xv_port_id, (int *) &num_xv_attribs);
++                if (xv_attribs != NULL) {
++                    for (k = 0; k < num_xv_attribs; ++k) {
++                        if (!strcmp(xv_attribs[k].name, VAXV_ATTR_STR)) {
++                            break;
++                        }
++                    }
++
++                    XFree(xv_attribs);
++
++                    if (k >= num_xv_attribs) {
++                        xv_port_id = 0;
++                        continue;
++                    }
++                } else {
++                    xv_port_id = 0;
++                    continue;
++                }
++
++                if (!XvGrabPort(ctx->native_dpy, xv_port_id, CurrentTime)) {
++
++                    // Set the VAXV attribute to 1.
++                    if (XvSetPortAttribute(ctx->native_dpy, xv_port_id,
++                                           XInternAtom(ctx->native_dpy, VAXV_ATTR_STR, 1),
++                                           1) != Success) {
++                        XvUngrabPort(ctx->native_dpy, xv_port_id, CurrentTime);
++                        xv_port_id = 0;
++                    } else {
++                        break;
++                    }
++                } else {
++                    xv_port_id = 0;
++                }
++            }
++
++            /* If port id is not zero, then already found and grab the port.
++             * just break out from the for loop.
++             */
++            if (xv_port_id) {
++                break;
++            }
++        }
++    }
++
++    XvFreeAdaptorInfo(xv_adaptors);
++
++    if (!xv_port_id) {
++       ret = VA_XV_STATUS_ERROR_PORT_NOT_FOUND;
++       goto error;
++    } else {
++       ret = _vaxv_QueryPortVersion(ctx, xv_port_id, &major, &minor);
++       if (ret == VA_XV_STATUS_SUCCESS) {
++          if ((major != VAXV_MAJOR) || (minor != VAXV_MINOR)) {
++             ret = VA_XV_STATUS_ERROR_PORT_VERSION_MISSMATCH;
++          }
++       }
++    }
++
++    /* Already grab the port, need to ungrab if have error. */
++    if (ret == VA_XV_STATUS_SUCCESS) {
++       *port_id = (int) xv_port_id;
++    } else {
++       va_xvFreePort(ctx->native_dpy, xv_port_id);
++    }
++
++error:
++    return ret;
++}
++
++void va_xvFreePort(VADriverContextP ctx, int port)
++{
++    if ((ctx == NULL) || (ctx->native_dpy == NULL))
++        return;
++
++    if (port) {
++        XvSetPortAttribute(ctx->native_dpy, port,
++                           XInternAtom(ctx->native_dpy, VAXV_ATTR_STR, 1),
++                           0);
++        XvUngrabPort(ctx->native_dpy, port, CurrentTime);
++    }
++
++    if (va_xv_img) {
++        XFree(va_xv_img);
++        va_xv_img = NULL;
++    }
++
++    if (va_xv_shminfo.shmid) {
++        XShmDetach(ctx->native_dpy, &va_xv_shminfo);
++        shmdt(va_xv_shminfo.shmaddr);
++        va_xv_shminfo.shmid = 0;
++    }
++
++    if (va_xv_gc) {
++        XFree(va_xv_gc);
++    }
++}
++
++int va_xvGetPortAttribute(VADriverContextP ctx, int port, const char *attrib_name, int *val)
++{
++    Atom atom = None;
++
++    if ((ctx == NULL) || (ctx->native_dpy == NULL) || (val == NULL)) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    if (!port) {
++        return VA_XV_STATUS_ERROR_PORT_UNKNOWN;
++    }
++
++    atom = XInternAtom(ctx->native_dpy, attrib_name, 1);
++
++    if (atom == None) {
++        return VA_XV_STATUS_ERROR_MISSING_ATTRIBUTE;
++    }
++
++    if (XvGetPortAttribute(ctx->native_dpy, port, atom, val) != Success) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    return VA_XV_STATUS_SUCCESS;
++
++}
++
++int va_xvSetPortAttribute(VADriverContextP ctx, int port, const char *attrib_name, int val)
++{
++    Atom atom = None;
++
++    if ((ctx == NULL) || (ctx->native_dpy == NULL)) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    if (!port) {
++        return VA_XV_STATUS_ERROR_PORT_UNKNOWN;
++    }
++
++    atom = XInternAtom(ctx->native_dpy, attrib_name, 1);
++
++    if (atom == None) {
++        return VA_XV_STATUS_ERROR_MISSING_ATTRIBUTE;
++    }
++
++    if (XvSetPortAttribute(ctx->native_dpy, port, atom, val) != Success) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    return VA_XV_STATUS_SUCCESS;
++}
++
++static int _vaxv_QueryPortVersion(VADriverContextP ctx, int port, unsigned short *major, unsigned short *minor)
++{
++    unsigned int version;
++    int ret;
++
++    if ((major == NULL) || (minor == NULL)) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    ret = va_xvGetPortAttribute(ctx, port, VAXV_VERSION_ATTR_STR,
++                                (int *) &version);
++
++    if (ret == VA_XV_STATUS_SUCCESS) {
++        *minor = (unsigned short) (version & 0x0000ffff);
++        *major = (unsigned short) (version >> 16);
++    }
++
++    return ret;
++}
++
++int va_xvQueryPortFormat(VADriverContextP ctx, int port, unsigned int *fourcc)
++{
++    return va_xvGetPortAttribute(ctx, port, VAXV_FORMAT_ATTR_STR, (int *) fourcc);
++
++}
++
++int va_xvQueryPortCapabilities(VADriverContextP ctx, int port, unsigned int *port_caps)
++{
++    return va_xvGetPortAttribute(ctx, port, VAXV_CAPS_ATTR_STR, (int *) port_caps);
++}
++
++int va_xvPutImage(VADriverContextP ctx, int port, void *window, const va_xv_buf_t *buf_info,
++                  short src_x, short src_y, unsigned short src_w, unsigned short src_h,
++                  short dst_x, short dst_y, unsigned short dst_w, unsigned short dst_h,
++                  unsigned int flags)
++{
++    va_xv_put_image_t *vaxv_putimage = NULL;
++    int ret;
++
++    if ((ctx == NULL) || (ctx->native_dpy == NULL) ||
++        (window == NULL) || (buf_info == NULL)) {
++        return VA_XV_STATUS_ERROR;
++    }
++
++    if (!va_xv_img) {
++        va_xv_img = (XvImage *) XvShmCreateImage(ctx->native_dpy, port, FOURCC_VAXV,
++                                                 NULL, 1, 1, &va_xv_shminfo);
++    }
++
++    if (!va_xv_shminfo.shmid) {
++        va_xv_shminfo.shmid =
++            shmget(IPC_PRIVATE, sizeof(va_xv_put_image_t), IPC_CREAT | 0666);
++        va_xv_shminfo.shmaddr = (char *) shmat(va_xv_shminfo.shmid, 0, 0);
++        va_xv_shminfo.readOnly = False;
++
++        va_xv_img->data = va_xv_shminfo.shmaddr;
++
++        XShmAttach(ctx->native_dpy, &va_xv_shminfo);
++    }
++
++    if (!va_xv_gc) {
++        va_xv_gc = XCreateGC(ctx->native_dpy, (Drawable) window, 0, NULL);
++    }
++
++    if (!va_xv_shminfo.shmid || !va_xv_img || !va_xv_gc) goto error;
++
++    vaxv_putimage = (va_xv_put_image_t *) va_xv_shminfo.shmaddr;
++
++    vaxv_putimage->size = sizeof(va_xv_put_image_t);
++    vaxv_putimage->flags = flags;
++
++    vaxv_putimage->video_image.buf_handle = buf_info->buf_handle;
++    vaxv_putimage->video_image.pixel_format = buf_info->pixel_format;
++    vaxv_putimage->video_image.buf_width = buf_info->buf_width;
++    vaxv_putimage->video_image.buf_height = buf_info->buf_height;
++    vaxv_putimage->video_image.pitches[0] = buf_info->pitches[0];
++    vaxv_putimage->video_image.pitches[1] = buf_info->pitches[1];
++    vaxv_putimage->video_image.pitches[2] = buf_info->pitches[2];
++    vaxv_putimage->video_image.offsets[0] = buf_info->offsets[0];
++    vaxv_putimage->video_image.offsets[1] = buf_info->offsets[1];
++    vaxv_putimage->video_image.offsets[2] = buf_info->offsets[2];
++
++
++    ret = XvShmPutImage(ctx->native_dpy, port, (Drawable) window,
++                        va_xv_gc, va_xv_img, src_x, src_y, src_w, src_h,
++                        dst_x, dst_y, dst_w, dst_h, False);
++
++    if (Success != ret) goto error;
++
++    XSync(ctx->native_dpy, False);
++
++    return VA_XV_STATUS_SUCCESS;
++
++error:
++    return VA_XV_STATUS_ERROR;
++}
+diff --git a/src/va_xv.h b/src/va_xv.h
+new file mode 100644
+index 0000000..1444450
+--- /dev/null
++++ b/src/va_xv.h
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sub license, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the
++ * next paragraph) shall be included in all copies or substantial portions
++ * of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
++ * IN NO EVENT SHALL PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR
++ * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#ifndef VA_XV_H
++#define VA_XV_H
++
++#include "va_xvcommon.h"
++
++
++#define VA_XV_STATUS_SUCCESS                           0
++#define VA_XV_STATUS_ERROR                            -1
++#define VA_XV_STATUS_ERROR_PORT_NOT_FOUND             -2
++#define VA_XV_STATUS_ERROR_PORT_VERSION_MISSMATCH     -3
++#define VA_XV_STATUS_ERROR_PORT_UNKNOWN               -4
++#define VA_XV_STATUS_ERROR_MISSING_ATTRIBUTE          -5
++
++
++int va_xvQueryVersion(VADriverContextP ctx, unsigned short *major, unsigned short *minor);
++int va_xvFindAndReservePort(VADriverContextP ctx, int *port);
++int va_xvQueryPortCapabilities(VADriverContextP ctx, int port, unsigned int *port_caps);
++int va_xvQueryPortFormat(VADriverContextP ctx, int port, unsigned int *fourcc);
++int va_xvGetPortAttribute(VADriverContextP ctx, int port, const char *attrib_name, int *val);
++int va_xvSetPortAttribute(VADriverContextP ctx, int port, const char *attrib_name, int val);
++int va_xvPutImage(VADriverContextP ctx, int port, void *window, const va_xv_buf_t *buf_info,
++                  short src_x, short src_y, unsigned short src_w, unsigned short src_h,
++                  short dst_x, short dst_y, unsigned short dst_w, unsigned short dst_h,
++                  unsigned int flags);
++void va_xvFreePort(VADriverContextP ctx, int port);
++
++#endif
+diff --git a/src/va_xv_ddx.h b/src/va_xv_ddx.h
+new file mode 100644
+index 0000000..943b98b
+--- /dev/null
++++ b/src/va_xv_ddx.h
+@@ -0,0 +1,43 @@
++/*
++ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sub license, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the
++ * next paragraph) shall be included in all copies or substantial portions
++ * of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
++ * IN NO EVENT SHALL PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR
++ * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#ifndef VA_XV_DDX_H
++#define VA_XV_DDX_H
++
++#include "va_xvcommon.h"
++
++#define VAXV_ATTR_STR            "VAXV_SHMBO"
++#define VAXV_VERSION_ATTR_STR    "VAXV_VERSION"
++#define VAXV_CAPS_ATTR_STR       "VAXV_CAPS"
++#define VAXV_FORMAT_ATTR_STR     "VAXV_FORMAT"
++
++#define FOURCC_VAXV              (('V' << 24) | ('X' << 16) | ('A' << 8) | 'V')
++
++typedef struct _va_xv_put_image {
++    int size;
++    va_xv_buf_t video_image;
++    unsigned int flags;
++} va_xv_put_image_t;
++
++#endif
+diff --git a/src/va_xvcommon.h b/src/va_xvcommon.h
+new file mode 100644
+index 0000000..3dde65a
+--- /dev/null
++++ b/src/va_xvcommon.h
+@@ -0,0 +1,57 @@
++/*
++ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sub license, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the
++ * next paragraph) shall be included in all copies or substantial portions
++ * of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
++ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
++ * IN NO EVENT SHALL PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR
++ * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#ifndef VA_XVCOMMON_H
++#define VA_XVCOMMON_H
++
++#define VAXV_MAJOR               0
++#define VAXV_MINOR               1
++
++#define VAXV_VERSION             ((VAXV_MAJOR << 16) | VAXV_MINOR)
++
++/* VAXV port cababilities
++ */
++/* The shared buffer object in put image are directly used on overlay/sprite */
++#define VAXV_CAP_DIRECT_BUFFER   1
++
++/* Scalling support */
++#define VAXV_CAP_SCALLING_UP     (1 << 4)
++#define VAXV_CAP_SCALLING_DOWN   (1 << 5)
++#define VAXV_CAP_SCALLING_FLAG   VAXV_CAP_SCALLING_UP | VAXV_CAP_SCALLING_DOWN
++
++/* Rotation support */
++#define VAXV_CAP_ROTATION_90     (1 << 8)
++#define VAXV_CAP_ROTATION_180    (1 << 9)
++#define VAXV_CAP_ROTATION_270    (1 << 10)
++#define VAXV_CAP_ROTATION_FLAG   VAXV_CAP_ROTATION_90 | VAXV_CAP_ROTATION_180 | VAXV_CAP_ROTATION_270
++
++typedef struct _va_xv_buf {
++    unsigned int  buf_handle;
++    unsigned long pixel_format;
++    int buf_width, buf_height;
++    unsigned int pitches[3];
++    unsigned int offsets[3];
++} va_xv_buf_t;
++
++#endif

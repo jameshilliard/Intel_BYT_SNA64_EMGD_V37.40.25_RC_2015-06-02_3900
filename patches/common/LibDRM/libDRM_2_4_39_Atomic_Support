@@ -1,0 +1,916 @@
+diff --git a/configure.ac b/configure.ac
+index 290362c..49c7259 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -350,6 +350,7 @@ AC_CONFIG_FILES([
+ 	tests/modeprint/Makefile
+ 	tests/modetest/Makefile
+ 	tests/kmstest/Makefile
++	tests/proptest/Makefile
+ 	tests/radeon/Makefile
+ 	tests/vbltest/Makefile
+ 	include/Makefile
+diff --git a/include/drm/drm.h b/include/drm/drm.h
+index a847689..9ce0a43 100644
+--- a/include/drm/drm.h
++++ b/include/drm/drm.h
+@@ -733,6 +733,7 @@ struct drm_prime_handle {
+ #define DRM_IOCTL_MODE_ADDFB2		DRM_IOWR(0xB8, struct drm_mode_fb_cmd2)
+ #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES	DRM_IOWR(0xB9, struct drm_mode_obj_get_properties)
+ #define DRM_IOCTL_MODE_OBJ_SETPROPERTY	DRM_IOWR(0xBA, struct drm_mode_obj_set_property)
++#define DRM_IOCTL_MODE_ATOMIC  DRM_IOWR(0xBB, struct drm_mode_atomic)
+ 
+ /**
+  * Device specific ioctls should only be in their respective headers
+@@ -764,6 +765,7 @@ struct drm_event {
+ 
+ #define DRM_EVENT_VBLANK 0x01
+ #define DRM_EVENT_FLIP_COMPLETE 0x02
++#define DRM_EVENT_ATOMIC_COMPLETE 0x03
+ 
+ struct drm_event_vblank {
+ 	struct drm_event base;
+@@ -774,6 +776,16 @@ struct drm_event_vblank {
+ 	__u32 reserved;
+ };
+ 
++struct drm_event_atomic {
++	struct drm_event base;
++	__u64 user_data;
++	__u32 tv_sec;
++	__u32 tv_usec;
++	__u32 sequence;
++	__u32 obj_id;
++	__u32 old_fb_id;
++};
++
+ #define DRM_CAP_DUMB_BUFFER 0x1
+ #define DRM_CAP_VBLANK_HIGH_CRTC   0x2
+ #define DRM_CAP_DUMB_PREFERRED_DEPTH 0x3
+diff --git a/include/drm/drm_mode.h b/include/drm/drm_mode.h
+index 62ba997..191312d 100644
+--- a/include/drm/drm_mode.h
++++ b/include/drm/drm_mode.h
+@@ -462,4 +462,20 @@ struct drm_mode_destroy_dumb {
+ 	__u32 handle;
+ };
+ 
++#define DRM_MODE_ATOMIC_TEST_ONLY (1<<0)
++#define DRM_MODE_ATOMIC_EVENT (1<<1)
++#define DRM_MODE_ATOMIC_NONBLOCK (1<<2)
++
++/* FIXME come up with some sane error reporting mechanism? */
++struct drm_mode_atomic {
++	__u32 flags;
++	__u32 count_objs;
++	__u64 objs_ptr;
++	__u64 count_props_ptr;
++	__u64 props_ptr;
++	__u64 prop_values_ptr;
++	__u64 blob_values_ptr;
++	__u64 user_data;
++};
++
+ #endif
+diff --git a/libkms/intel.c b/libkms/intel.c
+index 8b8249b..8aeb6ae 100644
+--- a/libkms/intel.c
++++ b/libkms/intel.c
+@@ -52,7 +52,7 @@ intel_get_prop(struct kms_driver *kms, unsigned key, unsigned *out)
+ {
+ 	switch (key) {
+ 	case KMS_BO_TYPE:
+-		*out = KMS_BO_TYPE_SCANOUT_X8R8G8B8 | KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8;
++		*out = KMS_BO_TYPE_SCANOUT_X8R8G8B8 | KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8 | KMS_BO_TYPE_SCANOUT_YUYV;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+@@ -100,6 +100,10 @@ intel_bo_create(struct kms_driver *kms,
+ 		pitch = width * 4;
+ 		pitch = (pitch + 512 - 1) & ~(512 - 1);
+ 		size = pitch * ((height + 4 - 1) & ~(4 - 1));
++	} else if (type == KMS_BO_TYPE_SCANOUT_YUYV) {
++		pitch = width * 2;
++		pitch = (pitch + 64 - 1) & ~(64 - 1);
++		size = pitch * height;
+ 	} else {
+ 		return -EINVAL;
+ 	}
+diff --git a/libkms/libkms.h b/libkms/libkms.h
+index 4664442..8cf3489 100644
+--- a/libkms/libkms.h
++++ b/libkms/libkms.h
+@@ -59,6 +59,8 @@ enum kms_bo_type
+ #define KMS_BO_TYPE_SCANOUT_X8R8G8B8 KMS_BO_TYPE_SCANOUT_X8R8G8B8
+ 	KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8 =  (1 << 1),
+ #define KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8 KMS_BO_TYPE_CURSOR_64X64_A8R8G8B8
++	KMS_BO_TYPE_SCANOUT_YUYV = (1 << 2),
++#define KMS_BO_TYPE_SCANOUT_YUYV KMS_BO_TYPE_SCANOUT_YUYV
+ };
+ 
+ int kms_create(int fd, struct kms_driver **out);
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index a3a59bd..1442854 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -10,7 +10,7 @@ check_PROGRAMS = \
+ 	dristat \
+ 	drmstat
+ 
+-SUBDIRS = modeprint
++SUBDIRS = modeprint proptest
+ 
+ if HAVE_LIBKMS
+ SUBDIRS += kmstest modetest
+diff --git a/tests/modetest/modetest.c b/tests/modetest/modetest.c
+index c91bb9d..8fd0298 100644
+--- a/tests/modetest/modetest.c
++++ b/tests/modetest/modetest.c
+@@ -214,8 +214,10 @@ dump_blob(uint32_t blob_id)
+ 	drmModePropertyBlobPtr blob;
+ 
+ 	blob = drmModeGetPropertyBlob(fd, blob_id);
+-	if (!blob)
++	if (!blob) {
++		printf("\n");
+ 		return;
++	}
+ 
+ 	blob_data = blob->data;
+ 
+@@ -262,8 +264,13 @@ dump_prop(uint32_t prop_id, uint64_t value)
+ 
+ 	if (prop->flags & DRM_MODE_PROP_RANGE) {
+ 		printf("\t\tvalues:");
+-		for (i = 0; i < prop->count_values; i++)
+-			printf(" %"PRIu64, prop->values[i]);
++		if (drmModeRangePropertyIsSigned(prop)) {
++			printf(" %"PRId64, (int64_t) prop->values[0]);
++			printf(" %"PRId64, (int64_t) prop->values[1]);
++		} else {
++			for (i = 0; i < prop->count_values; i++)
++				printf(" %"PRIu64, prop->values[i]);
++		}
+ 		printf("\n");
+ 	}
+ 
+@@ -295,8 +302,12 @@ dump_prop(uint32_t prop_id, uint64_t value)
+ 	printf("\t\tvalue:");
+ 	if (prop->flags & DRM_MODE_PROP_BLOB)
+ 		dump_blob(value);
+-	else
+-		printf(" %"PRIu64"\n", value);
++	else {
++		if (drmModeRangePropertyIsSigned(prop))
++			printf(" %"PRId64"\n", (int64_t) value);
++		else
++			printf(" %"PRIu64"\n", value);
++	}
+ 
+ 	drmModeFreeProperty(prop);
+ }
+diff --git a/tests/proptest/Makefile.am b/tests/proptest/Makefile.am
+new file mode 100644
+index 0000000..f81a3c0
+--- /dev/null
++++ b/tests/proptest/Makefile.am
+@@ -0,0 +1,11 @@
++AM_CFLAGS = \
++	-I$(top_srcdir)/include/drm \
++	-I$(top_srcdir)
++
++noinst_PROGRAMS = \
++	proptest
++
++proptest_SOURCES = \
++	proptest.c
++proptest_LDADD = \
++	$(top_builddir)/libdrm.la
+diff --git a/tests/proptest/proptest.c b/tests/proptest/proptest.c
+new file mode 100644
+index 0000000..1a6f225
+--- /dev/null
++++ b/tests/proptest/proptest.c
+@@ -0,0 +1,317 @@
++/*
++ * Copyright © 2012 Intel Corporation
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ *
++ * Authors:
++ *    Paulo Zanoni <paulo.r.zanoni@intel.com>
++ *
++ */
++
++#include <assert.h>
++#include <errno.h>
++#include <inttypes.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "xf86drm.h"
++#include "xf86drmMode.h"
++
++#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
++
++int fd;
++drmModeResPtr res = NULL;
++
++const char *connector_type_str(uint32_t type)
++{
++	switch (type) {
++	case DRM_MODE_CONNECTOR_Unknown:
++		return "Unknown";
++	case DRM_MODE_CONNECTOR_VGA:
++		return "VGA";
++	case DRM_MODE_CONNECTOR_DVII:
++		return "DVI-I";
++	case DRM_MODE_CONNECTOR_DVID:
++		return "DVI-D";
++	case DRM_MODE_CONNECTOR_DVIA:
++		return "DVI-A";
++	case DRM_MODE_CONNECTOR_Composite:
++		return "Composite";
++	case DRM_MODE_CONNECTOR_SVIDEO:
++		return "SVIDEO";
++	case DRM_MODE_CONNECTOR_LVDS:
++		return "LVDS";
++	case DRM_MODE_CONNECTOR_Component:
++		return "Component";
++	case DRM_MODE_CONNECTOR_9PinDIN:
++		return "9PinDin";
++	case DRM_MODE_CONNECTOR_DisplayPort:
++		return "DisplayPort";
++	case DRM_MODE_CONNECTOR_HDMIA:
++		return "HDMI-A";
++	case DRM_MODE_CONNECTOR_HDMIB:
++		return "HDMI-B";
++	case DRM_MODE_CONNECTOR_TV:
++		return "TV";
++	case DRM_MODE_CONNECTOR_eDP:
++		return "eDP";
++	default:
++		return "Invalid";
++	}
++}
++
++/* dump_blob and dump_prop shamelessly copied from ../modetest/modetest.c */
++static void
++dump_blob(uint32_t blob_id)
++{
++	uint32_t i;
++	unsigned char *blob_data;
++	drmModePropertyBlobPtr blob;
++
++	blob = drmModeGetPropertyBlob(fd, blob_id);
++	if (!blob)
++		return;
++
++	blob_data = blob->data;
++
++	for (i = 0; i < blob->length; i++) {
++		if (i % 16 == 0)
++			printf("\n\t\t\t");
++		printf("%.2hhx", blob_data[i]);
++	}
++	printf("\n");
++
++	drmModeFreePropertyBlob(blob);
++}
++
++static void
++dump_prop(uint32_t prop_id, uint64_t value)
++{
++	int i;
++	drmModePropertyPtr prop;
++
++	prop = drmModeGetProperty(fd, prop_id);
++
++	printf("\t%d", prop_id);
++	if (!prop) {
++		printf("\n");
++		return;
++	}
++
++	printf(" %s:\n", prop->name);
++
++	printf("\t\tflags:");
++	if (prop->flags & DRM_MODE_PROP_PENDING)
++		printf(" pending");
++	if (prop->flags & DRM_MODE_PROP_RANGE)
++		printf(" range");
++	if (prop->flags & DRM_MODE_PROP_IMMUTABLE)
++		printf(" immutable");
++	if (prop->flags & DRM_MODE_PROP_ENUM)
++		printf(" enum");
++	if (prop->flags & DRM_MODE_PROP_BLOB)
++		printf(" blob");
++	printf("\n");
++
++	if (prop->flags & DRM_MODE_PROP_RANGE) {
++		printf("\t\tvalues:");
++		for (i = 0; i < prop->count_values; i++)
++			printf(" %"PRIu64, prop->values[i]);
++		printf("\n");
++	}
++
++	if (prop->flags & DRM_MODE_PROP_ENUM) {
++		printf("\t\tenums:");
++		for (i = 0; i < prop->count_enums; i++)
++			printf(" %s=%llu", prop->enums[i].name,
++			       prop->enums[i].value);
++		printf("\n");
++	} else {
++		assert(prop->count_enums == 0);
++	}
++
++	if (prop->flags & DRM_MODE_PROP_BLOB) {
++		printf("\t\tblobs:\n");
++		for (i = 0; i < prop->count_blobs; i++)
++			dump_blob(prop->blob_ids[i]);
++		printf("\n");
++	} else {
++		assert(prop->count_blobs == 0);
++	}
++
++	printf("\t\tvalue:");
++	if (prop->flags & DRM_MODE_PROP_BLOB)
++		dump_blob(value);
++	else
++		printf(" %"PRIu64"\n", value);
++
++	drmModeFreeProperty(prop);
++}
++
++static void listObjectProperties(uint32_t id, uint32_t type)
++{
++	unsigned int i;
++	drmModeObjectPropertiesPtr props;
++
++	props = drmModeObjectGetProperties(fd, id, type);
++
++	if (!props) {
++		printf("\tNo properties: %s.\n", strerror(errno));
++		return;
++	}
++
++	for (i = 0; i < props->count_props; i++)
++		dump_prop(props->props[i], props->prop_values[i]);
++
++	drmModeFreeObjectProperties(props);
++}
++
++static void listConnectorProperties(void)
++{
++	int i;
++	drmModeConnectorPtr c;
++
++	for (i = 0; i < res->count_connectors; i++) {
++		c = drmModeGetConnector(fd, res->connectors[i]);
++
++		if (!c) {
++			fprintf(stderr, "Could not get connector %u: %s\n",
++				res->connectors[i], strerror(errno));
++			continue;
++		}
++
++		printf("Connector %u (%s-%u)\n", c->connector_id,
++		       connector_type_str(c->connector_type),
++		       c->connector_type_id);
++
++		listObjectProperties(c->connector_id,
++				     DRM_MODE_OBJECT_CONNECTOR);
++
++		drmModeFreeConnector(c);
++	}
++}
++
++static void listCrtcProperties(void)
++{
++	int i;
++	drmModeCrtcPtr c;
++
++	for (i = 0; i < res->count_crtcs; i++) {
++		c = drmModeGetCrtc(fd, res->crtcs[i]);
++
++		if (!c) {
++			fprintf(stderr, "Could not get crtc %u: %s\n",
++				res->crtcs[i], strerror(errno));
++			continue;
++		}
++
++		printf("CRTC %u\n", c->crtc_id);
++
++		listObjectProperties(c->crtc_id, DRM_MODE_OBJECT_CRTC);
++
++		drmModeFreeCrtc(c);
++	}
++}
++
++static void listAllProperties(void)
++{
++	listConnectorProperties();
++	listCrtcProperties();
++}
++
++static int setProperty(char *argv[])
++{
++	uint32_t obj_id, obj_type, prop_id;
++	uint64_t value;
++
++	obj_id = atoi(argv[1]);
++
++	if (!strcmp(argv[2], "connector")) {
++		obj_type = DRM_MODE_OBJECT_CONNECTOR;
++	} else if (!strcmp(argv[2], "crtc")) {
++		obj_type = DRM_MODE_OBJECT_CRTC;
++	} else {
++		fprintf(stderr, "Invalid object type.\n");
++		return 1;
++	}
++
++	prop_id = atoi(argv[3]);
++	value = atoll(argv[4]);
++
++	return drmModeObjectSetProperty(fd, obj_id, obj_type, prop_id, value);
++}
++
++static void printUsage(void)
++{
++	printf("Usage:\n"
++"  proptest\n"
++"  proptest [obj id] [obj type] [prop id] [value]\n"
++"\n"
++"The first form just prints all the existing properties. The second one is\n"
++"used to set the value of a specified property. The object type can be one of\n"
++"the following strings:\n"
++"  connector crtc\n"
++"\n"
++"Example:\n"
++"  proptest 7 connector 2 1\n"
++"will set property 2 of connector 7 to 1\n");
++}
++
++int main(int argc, char *argv[])
++{
++	char *modules[] = { "i915", "radeon", "nouveau", "vmwgfx", "omapdrm" };
++	unsigned int i, ret = 0;
++
++	for (i = 0; i < ARRAY_SIZE(modules); i++){
++		fd = drmOpen(modules[i], NULL);
++		if (fd >= 0) {
++			printf("Module %s loaded.\n", modules[i]);
++			break;
++		}
++	}
++
++	if (i == ARRAY_SIZE(modules)) {
++		fprintf(stderr, "Failed to load drm modules.\n");
++		return 1;
++	}
++
++	res = drmModeGetResources(fd);
++	if (!res) {
++		fprintf(stderr, "Failed to get resources: %s\n",
++			strerror(errno));
++		ret = 1;
++		goto done;
++	}
++
++	if (argc < 2) {
++		listAllProperties();
++	} else if (argc == 5) {
++		ret = setProperty(argv);
++	} else {
++		printUsage();
++		ret = 1;
++	}
++
++	drmModeFreeResources(res);
++done:
++	drmClose(fd);
++	return ret;
++}
+diff --git a/xf86drm.h b/xf86drm.h
+index 5ecb284..7b20223 100644
+--- a/xf86drm.h
++++ b/xf86drm.h
+@@ -701,7 +701,7 @@ extern void drmMsg(const char *format, ...);
+ extern int drmSetMaster(int fd);
+ extern int drmDropMaster(int fd);
+ 
+-#define DRM_EVENT_CONTEXT_VERSION 2
++#define DRM_EVENT_CONTEXT_VERSION 3
+ 
+ typedef struct _drmEventContext {
+ 
+@@ -721,6 +721,14 @@ typedef struct _drmEventContext {
+ 				  unsigned int tv_usec,
+ 				  void *user_data);
+ 
++	void (*atomic_handler)(int fd,
++			       unsigned int sequence,
++			       unsigned int tv_sec,
++			       unsigned int tv_usec,
++			       uint32_t obj_id,
++			       uint32_t old_fb_id,
++			       void *user_data);
++
+ } drmEventContext, *drmEventContextPtr;
+ 
+ extern int drmHandleEvent(int fd, drmEventContextPtr evctx);
+diff --git a/xf86drmMode.c b/xf86drmMode.c
+index 04fdf1f..379f641 100644
+--- a/xf86drmMode.c
++++ b/xf86drmMode.c
+@@ -40,6 +40,7 @@
+ #include <stdint.h>
+ #include <sys/ioctl.h>
+ #include <stdio.h>
++#include <stdbool.h>
+ 
+ #include "xf86drmMode.h"
+ #include "xf86drm.h"
+@@ -625,6 +626,14 @@ void drmModeFreeProperty(drmModePropertyPtr ptr)
+ 	drmFree(ptr);
+ }
+ 
++bool drmModeRangePropertyIsSigned(const drmModePropertyRes *prop)
++{
++	return prop &&
++		prop->flags & DRM_MODE_PROP_RANGE &&
++		prop->count_values == 2 &&
++		prop->values[0] > prop->values[1];
++}
++
+ drmModePropertyBlobPtr drmModeGetPropertyBlob(int fd, uint32_t blob_id)
+ {
+ 	struct drm_mode_get_blob blob;
+@@ -775,7 +784,8 @@ int drmHandleEvent(int fd, drmEventContextPtr evctx)
+ 	int len, i;
+ 	struct drm_event *e;
+ 	struct drm_event_vblank *vblank;
+-	
++	struct drm_event_atomic *atomic;
++
+ 	/* The DRM read semantics guarantees that we always get only
+ 	 * complete events. */
+ 
+@@ -811,6 +821,19 @@ int drmHandleEvent(int fd, drmEventContextPtr evctx)
+ 						 vblank->tv_usec,
+ 						 U642VOID (vblank->user_data));
+ 			break;
++		case DRM_EVENT_ATOMIC_COMPLETE:
++			if (evctx->version < 3 ||
++			    evctx->atomic_handler == NULL)
++				break;
++			atomic = (struct drm_event_atomic *) e;
++			evctx->atomic_handler(fd,
++					      atomic->sequence,
++					      atomic->tv_sec,
++					      atomic->tv_usec,
++					      atomic->obj_id,
++					      atomic->old_fb_id,
++					      U642VOID (atomic->user_data));
++			break;
+ 		default:
+ 			break;
+ 		}
+@@ -1057,3 +1080,271 @@ int drmModeObjectSetProperty(int fd, uint32_t object_id, uint32_t object_type,
+ 
+ 	return DRM_IOCTL(fd, DRM_IOCTL_MODE_OBJ_SETPROPERTY, &prop);
+ }
++
++typedef struct _drmModePropertySetItem drmModePropertySetItem, *drmModePropertySetItemPtr;
++
++struct _drmModePropertySetItem {
++	uint32_t object_id;
++	uint32_t property_id;
++	bool is_blob;
++	uint64_t value;
++	void *blob;
++	drmModePropertySetItemPtr next;
++};
++
++struct _drmModePropertySet {
++	unsigned int count_objs;
++	unsigned int count_props;
++	unsigned int count_blobs;
++	drmModePropertySetItem list;
++};
++
++drmModePropertySetPtr drmModePropertySetAlloc(void)
++{
++	drmModePropertySetPtr set;
++
++	set = drmMalloc(sizeof *set);
++	if (!set)
++		return NULL;
++
++	set->list.next = NULL;
++	set->count_props = 0;
++	set->count_objs = 0;
++
++	return set;
++}
++
++int drmModePropertySetAdd(drmModePropertySetPtr set,
++			  uint32_t object_id,
++			  uint32_t property_id,
++			  uint64_t value)
++{
++	drmModePropertySetItemPtr prev = &set->list;
++	bool new_obj = false;
++
++	/* keep it sorted by object_id and property_id */
++	while (prev->next) {
++		if (prev->next->object_id > object_id)
++			break;
++
++		if (prev->next->object_id == object_id &&
++		    prev->next->property_id >= property_id)
++			break;
++
++		prev = prev->next;
++	}
++
++	if ((prev == &set->list || prev->object_id != object_id) &&
++	    (!prev->next || prev->next->object_id != object_id))
++		new_obj = true;
++
++	/* replace or add? */
++	if (prev->next &&
++	    prev->next->object_id == object_id &&
++	    prev->next->property_id == property_id) {
++		drmModePropertySetItemPtr item = prev->next;
++
++		if (item->is_blob)
++			return -EINVAL;
++
++		item->value = value;
++	} else {
++		drmModePropertySetItemPtr item;
++
++		item = drmMalloc(sizeof *item);
++		if (!item)
++			return -1;
++
++		item->object_id = object_id;
++		item->property_id = property_id;
++		item->value = value;
++		item->is_blob = false;
++		item->blob = NULL;
++
++		item->next = prev->next;
++		prev->next = item;
++
++		set->count_props++;
++	}
++
++	if (new_obj)
++		set->count_objs++;
++
++	return 0;
++}
++
++int drmModePropertySetAddBlob(drmModePropertySetPtr set,
++			      uint32_t object_id,
++			      uint32_t property_id,
++			      uint64_t length,
++			      void *data)
++{
++	drmModePropertySetItemPtr prev = &set->list;
++	bool new_obj = false;
++
++	/* keep it sorted by object_id and property_id */
++	while (prev->next) {
++		if (prev->next->object_id > object_id)
++			break;
++
++		if (prev->next->object_id == object_id &&
++		    prev->next->property_id >= property_id)
++			break;
++
++		prev = prev->next;
++	}
++
++	if ((prev == &set->list || prev->object_id != object_id) &&
++	    (!prev->next || prev->next->object_id != object_id))
++		new_obj = true;
++
++	/* replace or add? */
++	if (prev->next &&
++	    prev->next->object_id == object_id &&
++	    prev->next->property_id == property_id) {
++		drmModePropertySetItemPtr item = prev->next;
++
++		if (!item->is_blob)
++			return -EINVAL;
++
++		item->value = length;
++		item->blob = data;
++	} else {
++		drmModePropertySetItemPtr item;
++
++		item = drmMalloc(sizeof *item);
++		if (!item)
++			return -1;
++
++		item->object_id = object_id;
++		item->property_id = property_id;
++		item->is_blob = true;
++		item->value = length;
++		item->blob = data;
++
++		item->next = prev->next;
++		prev->next = item;
++
++		set->count_props++;
++		set->count_blobs++;
++	}
++
++	if (new_obj)
++		set->count_objs++;
++
++	return 0;
++}
++
++void drmModePropertySetFree(drmModePropertySetPtr set)
++{
++	drmModePropertySetItemPtr item;
++
++	if (!set)
++		return;
++
++	item = set->list.next;
++
++	while (item) {
++		drmModePropertySetItemPtr next = item->next;
++
++		drmFree(item);
++
++		item = next;
++	}
++
++	drmFree(set);
++}
++
++int drmModePropertySetCommit(int fd, uint32_t flags, void *user_data,
++			     drmModePropertySetPtr set)
++{
++	drmModePropertySetItemPtr item;
++	uint32_t *objs_ptr = NULL;
++	uint32_t *count_props_ptr = NULL;
++	uint32_t *props_ptr = NULL;
++	uint64_t *prop_values_ptr = NULL;
++	uint64_t *blob_values_ptr = NULL;
++	struct drm_mode_atomic atomic = { 0 };
++	unsigned int obj_idx = 0;
++	unsigned int prop_idx = 0;
++	unsigned int blob_idx = 0;
++	int ret = -1;
++
++	if (!set)
++		return -1;
++
++	objs_ptr = drmMalloc(set->count_objs * sizeof objs_ptr[0]);
++	if (!objs_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	count_props_ptr = drmMalloc(set->count_objs * sizeof count_props_ptr[0]);
++	if (!count_props_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	props_ptr = drmMalloc(set->count_props * sizeof props_ptr[0]);
++	if (!props_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	prop_values_ptr = drmMalloc(set->count_props * sizeof prop_values_ptr[0]);
++	if (!prop_values_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	blob_values_ptr = drmMalloc(set->count_blobs * sizeof blob_values_ptr[0]);
++	if (!blob_values_ptr) {
++		errno = ENOMEM;
++		goto out;
++	}
++
++	item = set->list.next;
++
++	while (item) {
++		int count_props = 0;
++		drmModePropertySetItemPtr next = item;
++
++		objs_ptr[obj_idx] = item->object_id;
++
++		while (next && next->object_id == item->object_id) {
++			props_ptr[prop_idx] = next->property_id;
++			prop_values_ptr[prop_idx] = next->value;
++			prop_idx++;
++
++			if (next->is_blob)
++				blob_values_ptr[blob_idx++] = VOID2U64(next->blob);
++
++			count_props++;
++
++			next = next->next;
++		}
++
++		count_props_ptr[obj_idx++] = count_props;
++
++		item = next;
++	}
++
++	atomic.count_objs = set->count_objs;
++	atomic.flags = flags;
++	atomic.objs_ptr = VOID2U64(objs_ptr);
++	atomic.count_props_ptr = VOID2U64(count_props_ptr);
++	atomic.props_ptr = VOID2U64(props_ptr);
++	atomic.prop_values_ptr = VOID2U64(prop_values_ptr);
++	atomic.blob_values_ptr = VOID2U64(blob_values_ptr);
++	atomic.user_data = VOID2U64(user_data);
++
++	ret = DRM_IOCTL(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
++
++out:
++	drmFree(objs_ptr);
++	drmFree(count_props_ptr);
++	drmFree(props_ptr);
++	drmFree(prop_values_ptr);
++	drmFree(blob_values_ptr);
++	return ret;
++}
+diff --git a/xf86drmMode.h b/xf86drmMode.h
+index 8e40034..d616f7f 100644
+--- a/xf86drmMode.h
++++ b/xf86drmMode.h
+@@ -40,6 +40,7 @@
+ extern "C" {
+ #endif
+ 
++#include <stdbool.h>
+ #include <drm.h>
+ 
+ /*
+@@ -412,6 +413,8 @@ extern int drmModeDetachMode(int fd, uint32_t connectorId, drmModeModeInfoPtr mo
+ extern drmModePropertyPtr drmModeGetProperty(int fd, uint32_t propertyId);
+ extern void drmModeFreeProperty(drmModePropertyPtr ptr);
+ 
++extern bool drmModeRangePropertyIsSigned(const drmModePropertyRes *prop);
++
+ extern drmModePropertyBlobPtr drmModeGetPropertyBlob(int fd, uint32_t blob_id);
+ extern void drmModeFreePropertyBlob(drmModePropertyBlobPtr ptr);
+ extern int drmModeConnectorSetProperty(int fd, uint32_t connector_id, uint32_t property_id,
+@@ -442,6 +445,26 @@ extern int drmModeObjectSetProperty(int fd, uint32_t object_id,
+ 				    uint32_t object_type, uint32_t property_id,
+ 				    uint64_t value);
+ 
++
++typedef struct _drmModePropertySet drmModePropertySet, *drmModePropertySetPtr;
++
++extern drmModePropertySetPtr drmModePropertySetAlloc(void);
++
++extern int drmModePropertySetAdd(drmModePropertySetPtr set,
++				 uint32_t object_id,
++				 uint32_t property_id,
++				 uint64_t value);
++extern int drmModePropertySetAddBlob(drmModePropertySetPtr set,
++				     uint32_t object_id,
++				     uint32_t property_id,
++				     uint64_t length,
++				     void *blob);
++
++extern int drmModePropertySetCommit(int fd, uint32_t flags,
++				    void *user_data, drmModePropertySetPtr set);
++
++extern void drmModePropertySetFree(drmModePropertySetPtr set);
++
+ #if defined(__cplusplus) || defined(c_plusplus)
+ }
+ #endif
